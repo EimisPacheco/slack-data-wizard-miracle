@@ -1,0 +1,1 @@
+{"name":"whiteboard-to-table","version":"1.0.0","type":"module","description":"Draw a table on a whiteboard; Gemma vision turns it into a Databricks table.","scripts":{"start":"node server.js"},"dependencies":{"express":"^5.2.1"}}

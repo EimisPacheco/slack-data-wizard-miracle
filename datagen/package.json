@@ -1,0 +1,2 @@
+{ "name": "datagen", "version": "1.0.0", "type": "module",
+  "description": "Generate table data: real (Perplexity web search) or synthetic (OpenAI)." }

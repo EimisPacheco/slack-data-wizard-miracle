@@ -1,0 +1,113 @@
+/**
+ * Databricks SQL client over the Statement Execution API.
+ * Free Edition gives one serverless warehouse; it auto-starts on first query.
+ *
+ * Note on safety: Free Edition has no per-statement read-only role, so the
+ * "least-privilege reader" guarantee from the MySQL version is not available here.
+ * Destructive statements are gated by guard.js + human confirmation only.
+ */
+
+const HOST = () => process.env.DATABRICKS_HOST;
+const TOKEN = () => process.env.DATABRICKS_TOKEN;
+const WAREHOUSE = () => process.env.DATABRICKS_WAREHOUSE_ID;
+
+function headers() {
+  return { Authorization: `Bearer ${TOKEN()}`, 'Content-Type': 'application/json' };
+}
+
+async function poll(statementId) {
+  // Serverless cold start can exceed the initial wait; poll until terminal.
+  for (let i = 0; i < 60; i++) {
+    const r = await fetch(`${HOST()}/api/2.0/sql/statements/${statementId}`, { headers: headers() });
+    const j = await r.json();
+    const state = j.status?.state;
+    if (['SUCCEEDED', 'FAILED', 'CANCELED', 'CLOSED'].includes(state)) return j;
+    await new Promise(res => setTimeout(res, 2000));
+  }
+  throw new Error('statement did not finish within timeout');
+}
+
+/**
+ * Runs one SQL statement. Returns { columns: [{name,type}], rows: [[...]], rowObjects: [{}] }.
+ * @param {object} opts { catalog, schema } set the default namespace for the statement.
+ */
+export async function runSql(statement, opts = {}) {
+  const body = {
+    warehouse_id: WAREHOUSE(),
+    statement,
+    wait_timeout: '30s',
+    on_wait_timeout: 'CONTINUE',
+  };
+  if (opts.catalog) body.catalog = opts.catalog;
+  if (opts.schema) body.schema = opts.schema;
+
+  const r = await fetch(`${HOST()}/api/2.0/sql/statements`, {
+    method: 'POST', headers: headers(), body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`Databricks HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+
+  let result = await r.json();
+  if (['PENDING', 'RUNNING'].includes(result.status?.state)) {
+    result = await poll(result.statement_id);
+  }
+
+  if (result.status?.state !== 'SUCCEEDED') {
+    const msg = result.status?.error?.message || result.status?.state;
+    throw new Error(`SQL failed: ${msg}`);
+  }
+
+  const columns = (result.manifest?.schema?.columns || []).map(c => ({ name: c.name, type: c.type_name }));
+  const rows = result.result?.data_array || [];
+  const rowObjects = rows.map(row => Object.fromEntries(columns.map((c, i) => [c.name, row[i]])));
+  return { columns, rows, rowObjects, totalRows: result.manifest?.total_row_count ?? rows.length };
+}
+
+/** Escapes a string literal for Databricks SQL. */
+export function sqlString(v) {
+  if (v == null) return 'NULL';
+  return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
+/** Backtick-quotes an identifier after sanitising. */
+export function ident(name) {
+  const cleaned = String(name).trim().replace(/[^A-Za-z0-9_]/g, '_').replace(/_{2,}/g, '_');
+  if (!cleaned) throw new Error(`identifier "${name}" empty after sanitising`);
+  return '`' + (/^\d/.test(cleaned) ? 'c_' + cleaned : cleaned) + '`';
+}
+
+// ── namespace helpers ──────────────────────────────────────────────
+
+export async function listCatalogs() {
+  const { rows } = await runSql('SHOW CATALOGS');
+  return rows.map(r => r[0]);
+}
+
+export async function listSchemas(catalog) {
+  const { rows } = await runSql(`SHOW SCHEMAS IN ${ident(catalog)}`);
+  return rows.map(r => r[0]);
+}
+
+export async function listTables(catalog, schema) {
+  const { rowObjects } = await runSql(`SHOW TABLES IN ${ident(catalog)}.${ident(schema)}`);
+  // SHOW TABLES columns: database, tableName, isTemporary
+  return rowObjects.map(r => r.tableName ?? r.table_name ?? Object.values(r)[1]);
+}
+
+export async function describeTable(catalog, schema, table) {
+  const { rows } = await runSql(`DESCRIBE ${ident(catalog)}.${ident(schema)}.${ident(table)}`);
+  // stops at the first blank/partitioning separator row
+  const cols = [];
+  for (const [name, type] of rows) {
+    if (!name || name.startsWith('#')) break;
+    cols.push({ name, type });
+  }
+  return cols;
+}
+
+export async function ensureSchema(catalog, schema) {
+  await runSql(`CREATE SCHEMA IF NOT EXISTS ${ident(catalog)}.${ident(schema)}`);
+}
+
+export async function ensureCatalog(catalog) {
+  await runSql(`CREATE CATALOG IF NOT EXISTS ${ident(catalog)}`);
+}

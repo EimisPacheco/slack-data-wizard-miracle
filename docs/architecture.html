@@ -1,0 +1,212 @@
+<meta charset="utf-8">
+<title>Data Wizard — Architecture</title>
+<style>
+  :root{
+    --gold:#F0A93B; --bronze:#C97B3C; --silver:#9BB0C4;
+    --cyan:#5EC8D8; --violet:#9B8CF0; --danger:#FF5C5C; --green:#5FD0A0;
+    --ink:#EAF0F7; --dim:#93A4B8; --faint:#61738A;
+    --line:rgba(155,176,196,.18);
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Arial,sans-serif;
+  }
+  *{box-sizing:border-box; margin:0;}
+  body{
+    width:2880px; min-height:1230px; padding:0; color:var(--ink);
+    font-family:var(--sans); -webkit-font-smoothing:antialiased;
+    background:
+      radial-gradient(90% 70% at 5% 0%, #1B2740 0%, transparent 55%),
+      radial-gradient(80% 80% at 100% 100%, #2E2350 0%, transparent 60%),
+      linear-gradient(160deg,#0B111C 0%,#101A2A 55%,#161C34 100%);
+    position:relative; overflow:hidden;
+  }
+  .topbar{position:absolute; top:0; left:0; right:0; height:6px;
+    background:linear-gradient(90deg,var(--danger),var(--gold) 34%,var(--bronze) 62%,var(--violet));}
+  .wrap{padding:58px 56px 44px;}
+
+  h1{font-size:52px; font-weight:800; letter-spacing:-.02em; text-align:center;}
+  .sub{text-align:center; color:var(--dim); font-size:21px; margin-top:14px;}
+  .sub b{color:var(--ink); font-weight:650;}
+
+  .row{display:grid; grid-template-columns:1fr 88px 1fr 88px 1fr; gap:0; margin-top:52px; align-items:stretch;}
+
+  .panel{border:1.5px solid; border-radius:22px; padding:28px 26px 30px; position:relative;
+    background:rgba(255,255,255,.022);}
+  .p1{border-color:rgba(94,200,216,.42); box-shadow:inset 0 0 60px rgba(94,200,216,.05);}
+  .p2{border-color:rgba(240,169,59,.48); box-shadow:inset 0 0 60px rgba(240,169,59,.06);}
+  .p3{border-color:rgba(155,140,240,.45); box-shadow:inset 0 0 60px rgba(155,140,240,.05);}
+
+  .ph{display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; gap:14px;}
+  .pt{font-size:28px; font-weight:800; letter-spacing:-.01em;}
+  .p1 .pt{color:var(--cyan);} .p2 .pt{color:var(--gold);} .p3 .pt{color:var(--violet);}
+  .pill{font:600 12.5px/1 var(--mono); letter-spacing:.06em; color:var(--faint);
+    border:1px solid var(--line); border-radius:100px; padding:8px 14px; white-space:nowrap;}
+
+  .card{background:rgba(255,255,255,.05); border:1px solid var(--line); border-left:4px solid var(--gold);
+    border-radius:13px; padding:18px 20px; margin-bottom:15px;}
+  .card:last-child{margin-bottom:0;}
+  .ct{font-size:21px; font-weight:750; display:flex; align-items:center; gap:9px; flex-wrap:wrap;}
+  .cd{font-size:17px; color:var(--dim); margin-top:8px; line-height:1.48;}
+  .cd b{color:var(--ink); font-weight:650;}
+  .tag{font:600 11.5px/1 var(--mono); padding:5px 9px; border-radius:6px; letter-spacing:.03em;}
+  .t-gold{color:var(--gold); background:rgba(240,169,59,.14); border:1px solid rgba(240,169,59,.3);}
+  .t-red{color:var(--danger); background:rgba(255,92,92,.13); border:1px solid rgba(255,92,92,.32);}
+  .t-cy{color:var(--cyan); background:rgba(94,200,216,.12); border:1px solid rgba(94,200,216,.3);}
+  .t-wip{color:var(--bronze); background:rgba(201,123,60,.14); border:1px solid rgba(201,123,60,.42);}
+  .t-gr{color:var(--green); background:rgba(95,208,160,.12); border:1px solid rgba(95,208,160,.3);}
+
+  .r-cy{border-left-color:var(--cyan);} .r-gold{border-left-color:var(--gold);}
+  .r-vi{border-left-color:var(--violet);} .r-br{border-left-color:var(--bronze);}
+  .r-sv{border-left-color:var(--silver);} .r-rd{border-left-color:var(--danger);}
+  .r-gr{border-left-color:var(--green);}
+
+  .conn{display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;}
+  .conn .lbl{font:600 12.5px/1.5 var(--mono); color:var(--faint); text-align:center; letter-spacing:.02em;}
+  .conn .arrow{font-size:30px; color:var(--gold); line-height:1;}
+
+  .footer{margin-top:40px; display:flex; align-items:center; gap:22px;
+    border:1px solid rgba(95,208,160,.3); border-radius:16px; padding:20px 26px;
+    background:linear-gradient(90deg,rgba(95,208,160,.09),rgba(255,255,255,.02));}
+  .ret{font:700 13px/1 var(--mono); color:var(--green); letter-spacing:.12em; white-space:nowrap;}
+  .footer .txt{font-size:19px; color:var(--dim); line-height:1.5;}
+  .footer .txt b{color:var(--ink); font-weight:700;}
+
+  .note{margin-top:24px; text-align:center; font:600 13.5px/1 var(--mono);
+    color:var(--faint); letter-spacing:.04em;}
+  .note span{color:var(--silver);}
+</style>
+
+<div class="topbar"></div>
+<div class="wrap">
+
+  <h1>Data Wizard — <span style="color:var(--gold)">Gemma 4 31B on the AMD Instinct GPU</span></h1>
+  <p class="sub">Reasoning <b>and</b> vision both execute on one AMD GPU through ROCm. Every statement Gemma writes is <b>classified before it runs</b> — nothing destructive executes without a human click.</p>
+
+  <div class="row">
+
+    <!-- PANEL 1 -->
+    <div class="panel p1">
+      <div class="ph">
+        <div class="pt">1 · Slack Interface</div>
+        <div class="pill">BOLT · SOCKET MODE</div>
+      </div>
+
+      <div class="card r-cy">
+        <div class="ct">💬 Ask &amp; Create in English <span class="tag t-cy">no SQL</span></div>
+        <div class="cd">"How many signups per country?" · "Create a schema called sales." <b>Questions and object creation</b> are both plain language.</div>
+      </div>
+
+      <div class="card r-cy">
+        <div class="ct">📥 Ingest Anything <span class="tag t-gold">CSV · PDF</span></div>
+        <div class="cd">Drop a <b>CSV</b> or a <b>scanned PDF</b>. Types are inferred; the page image is read by Gemma. Whiteboard drawings use the same path <span class="tag t-wip">in progress</span></div>
+      </div>
+
+      <div class="card r-sv">
+        <div class="ct">🧭 Upload Wizard</div>
+        <div class="cd">Name the table <b>in your own words</b> — never <span style="font-family:var(--mono);font-size:13.5px">q3_export_final_v2</span>. New or existing · <b>append or replace</b>.</div>
+      </div>
+
+      <div class="card r-gold">
+        <div class="ct">🧱 Block Kit Surfaces</div>
+        <div class="cd">Results render as a real <b>Data Table</b>; actions and confirmations as <b>Cards</b>. Not a text bot.</div>
+      </div>
+    </div>
+
+    <div class="conn">
+      <div class="lbl">question<br>+ live schema<br>+ page image</div>
+      <div class="arrow">➜</div>
+    </div>
+
+    <!-- PANEL 2 -->
+    <div class="panel p2">
+      <div class="ph">
+        <div class="pt">2 · Reasoning on AMD</div>
+        <div class="pill">AMD INSTINCT · ROCm · OLLAMA</div>
+      </div>
+
+      <div class="card r-rd">
+        <div class="ct">🧠 Gemma 4 · 31B <span class="tag t-red">AMD Developer Cloud</span></div>
+        <div class="cd"><b>Open weights. Text + vision in one model</b>, resident on the GPU. Served with Ollama on ROCm. There is <b>no closed model</b> anywhere in the reasoning loop.</div>
+      </div>
+
+      <div class="card r-rd">
+        <div class="ct">🗄 Natural Language → SQL <span class="tag t-gold">job 01</span></div>
+        <div class="cd">Reads the <b>live schema</b>, writes exactly one Databricks statement, and explains it in a sentence.</div>
+      </div>
+
+      <div class="card r-rd">
+        <div class="ct">🏗 Natural Language → DDL <span class="tag t-gold">job 02</span></div>
+        <div class="cd"><span style="font-family:var(--mono);font-size:13.5px">CREATE SCHEMA</span> · <span style="font-family:var(--mono);font-size:13.5px">CREATE TABLE</span> · <span style="font-family:var(--mono);font-size:13.5px">SHOW</span> · <span style="font-family:var(--mono);font-size:13.5px">DESCRIBE</span> — <b>creation is language too</b>.</div>
+      </div>
+
+      <div class="card r-rd">
+        <div class="ct">👁 Gemma Vision <span class="tag t-gold">job 03</span></div>
+        <div class="cd">A scanned invoice is a <b>picture, not data</b>. Vision reads the table straight off the page image.</div>
+      </div>
+
+      <div class="card r-rd">
+        <div class="ct">📊 Chart Spec <span class="tag t-gold">job 04</span></div>
+        <div class="cd">Chooses <b>chart type, dimension, measure</b> and aggregation from one sentence.</div>
+      </div>
+
+      <div class="card r-cy">
+        <div class="ct">🔥 Fireworks AI <span class="tag t-cy">fallback</span></div>
+        <div class="cd">The <b>same open Gemma family</b>, so a GPU cold-start never becomes a failed request.</div>
+      </div>
+    </div>
+
+    <div class="conn">
+      <div class="lbl">classified SQL<br>+ chart spec<br>+ typed rows</div>
+      <div class="arrow">➜</div>
+    </div>
+
+    <!-- PANEL 3 -->
+    <div class="panel p3">
+      <div class="ph">
+        <div class="pt">3 · Govern &amp; Deliver</div>
+        <div class="pill">DATABRICKS · TABLEAU</div>
+      </div>
+
+      <div class="card r-rd">
+        <div class="ct">🛡 SQL Safety Guard <span class="tag t-red">before execution</span></div>
+        <div class="cd">Every statement is classified — read / write / <b>destructive</b> — with string literals stripped so a keyword hidden in a quote can't smuggle through. <b>Destructive waits for a click.</b></div>
+      </div>
+
+      <div class="card r-br">
+        <div class="ct">🥉 Bronze <span class="tag t-gold">raw + lineage</span></div>
+        <div class="cd">Rows exactly as given, plus <span style="font-family:var(--mono);font-size:13.5px">_ingested_at</span> and <span style="font-family:var(--mono);font-size:13.5px">_source</span>.</div>
+      </div>
+
+      <div class="card r-sv">
+        <div class="ct">🥈 Silver <span class="tag t-gold">deduped + typed</span></div>
+        <div class="cd">Duplicates removed, empty rows dropped, types enforced.</div>
+      </div>
+
+      <div class="card r-gold">
+        <div class="ct">🥇 Gold <span class="tag t-gold">aggregated</span></div>
+        <div class="cd">Grouped on a dimension chosen <b>by measuring cardinality</b> — so it actually groups.</div>
+      </div>
+
+      <div class="card r-vi">
+        <div class="ct">📈 Tableau REST <span class="tag t-cy">.twb → publish → PNG</span></div>
+        <div class="cd">A <b>real workbook</b> is generated and published, and the rendered chart posts <b>back into Slack</b>.</div>
+      </div>
+
+      <div class="card r-gr">
+        <div class="ct">🗃 Unity Catalog <span class="tag t-gr">Databricks</span></div>
+        <div class="cd">Catalogs, schemas and tables — governed, and <b>never named after the file</b>.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div class="ret">◂ RETURNED</div>
+    <div class="txt">
+      <b>A formatted table in the channel, a governed lakehouse, and a published Tableau dashboard — from one sentence.</b>
+      The user never sees a console, writes a line of SQL, or learns the word "medallion". And because the weights are open and the GPU is theirs, <b>the scanned patient record never leaves the building.</b>
+    </div>
+  </div>
+
+  <div class="note">
+    100% open-weight reasoning &nbsp;·&nbsp; <span>no closed model in the loop</span> &nbsp;·&nbsp; HIPAA / GDPR data never leaves your infrastructure &nbsp;·&nbsp; <span>Track 3 does not score speed</span>
+  </div>
+</div>

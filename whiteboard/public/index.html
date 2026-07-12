@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Whiteboard → Table</title>
+<style>
+  :root { --ink:#1f2d3d; --accent:#2e7d32; --bg:#fbfbf7; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, system-ui, sans-serif; color:var(--ink); background:#eef0f2; }
+  header { padding:14px 20px; background:#1f2d3d; color:#fff; display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  header .hint { font-size:13px; opacity:.75; }
+  .toolbar { display:flex; gap:10px; align-items:center; padding:12px 20px; background:#fff; border-bottom:1px solid #e3e6ea; flex-wrap:wrap; }
+  .toolbar button, .toolbar label { font-size:14px; padding:8px 14px; border:1px solid #d0d5db; border-radius:8px; background:#fff; cursor:pointer; }
+  .toolbar button.primary { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
+  .toolbar button.active { background:#eef; border-color:#88a; }
+  .swatch { width:22px; height:22px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px #ccc; cursor:pointer; }
+  .swatch.active { box-shadow:0 0 0 2px var(--ink); }
+  .wrap { display:flex; gap:16px; padding:16px 20px; align-items:flex-start; }
+  #board { background:var(--bg); border:1px solid #d0d5db; border-radius:10px; touch-action:none; box-shadow:0 2px 10px rgba(0,0,0,.06); cursor:crosshair; }
+  #result { flex:1; min-width:280px; }
+  .card { background:#fff; border:1px solid #e3e6ea; border-radius:10px; padding:16px; }
+  .muted { color:#6b7280; font-size:14px; }
+  table { border-collapse:collapse; width:100%; margin-top:10px; font-size:14px; }
+  th,td { border:1px solid #e3e6ea; padding:6px 10px; text-align:left; }
+  th { background:#f6f8fa; }
+  .ok { color:var(--accent); font-weight:600; }
+  .err { color:#c0392b; }
+  input[type=text] { padding:8px 10px; border:1px solid #d0d5db; border-radius:8px; font-size:14px; width:180px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎨 Whiteboard → Table</h1>
+  <span class="hint">Sketch a table with columns and rows, then extract it into your lakehouse.</span>
+</header>
+
+<div class="toolbar">
+  <button id="pen" class="active">✏️ Pen</button>
+  <button id="eraser">🩹 Eraser</button>
+  <span id="swatches"></span>
+  <label>Size <input id="size" type="range" min="2" max="18" value="4"></label>
+  <button id="clear">🗑️ Clear</button>
+  <span style="flex:1"></span>
+  <input id="tableName" type="text" placeholder="table name (optional)">
+  <button id="extract" class="primary">✨ Extract to table</button>
+</div>
+
+<div class="wrap">
+  <canvas id="board" width="900" height="640"></canvas>
+  <div id="result">
+    <div class="card">
+      <div class="muted">Draw a small table — a header row and a few data rows — then click <b>Extract to table</b>.</div>
+      <div id="out" style="margin-top:12px"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+ctx.fillStyle = '#fbfbf7'; ctx.fillRect(0,0,canvas.width,canvas.height);
+ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+let color = '#1f2d3d', size = 4, mode = 'pen', drawing = false, last = null;
+const colors = ['#1f2d3d','#c0392b','#2e7d32','#2563eb','#e6a800'];
+const sw = document.getElementById('swatches');
+colors.forEach((c,i) => {
+  const s = document.createElement('span'); s.className = 'swatch'+(i===0?' active':''); s.style.background = c;
+  s.onclick = () => { color=c; mode='pen'; setActive('pen'); document.querySelectorAll('.swatch').forEach(e=>e.classList.remove('active')); s.classList.add('active'); };
+  sw.appendChild(s);
+});
+const setActive = id => { document.getElementById('pen').classList.toggle('active', id==='pen'); document.getElementById('eraser').classList.toggle('active', id==='eraser'); };
+document.getElementById('pen').onclick = () => { mode='pen'; setActive('pen'); };
+document.getElementById('eraser').onclick = () => { mode='eraser'; setActive('eraser'); };
+document.getElementById('size').oninput = e => size = +e.target.value;
+document.getElementById('clear').onclick = () => { ctx.fillStyle='#fbfbf7'; ctx.fillRect(0,0,canvas.width,canvas.height); };
+
+const pos = e => { const r = canvas.getBoundingClientRect(); const t = e.touches?.[0]; return { x:(t?t.clientX:e.clientX)-r.left, y:(t?t.clientY:e.clientY)-r.top }; };
+const start = e => { drawing=true; last=pos(e); e.preventDefault(); };
+const move = e => {
+  if(!drawing) return; const p = pos(e);
+  ctx.strokeStyle = mode==='eraser' ? '#fbfbf7' : color;
+  ctx.lineWidth = mode==='eraser' ? size*6 : size;
+  ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+  last = p; e.preventDefault();
+};
+const end = () => drawing=false;
+canvas.addEventListener('mousedown',start); canvas.addEventListener('mousemove',move); window.addEventListener('mouseup',end);
+canvas.addEventListener('touchstart',start); canvas.addEventListener('touchmove',move); window.addEventListener('touchend',end);
+
+document.getElementById('extract').onclick = async () => {
+  const out = document.getElementById('out');
+  out.innerHTML = '<span class="muted">🧠 Reading your drawing with Gemma on the AMD GPU… (~15s)</span>';
+  try {
+    const res = await fetch('/extract', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ image: canvas.toDataURL('image/png'), table: document.getElementById('tableName').value })
+    });
+    const d = await res.json();
+    if (!d.ok) { out.innerHTML = '<span class="err">'+(d.message||d.error||'Extraction failed')+'</span>'; return; }
+    let html = '<div class="ok">✅ Loaded '+d.rowsInserted+' rows into <code>'+d.table+'</code> <span class="muted">(via '+d.via+')</span></div>';
+    html += '<table><thead><tr>'+d.columns.map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>';
+    html += d.rows.map(r=>'<tr>'+r.map(v=>'<td>'+(v??'')+'</td>').join('')+'</tr>').join('');
+    html += '</tbody></table>';
+    html += '<div class="muted" style="margin-top:8px">Types: '+d.types.map(t=>t.name+' '+t.type).join(', ')+'</div>';
+    out.innerHTML = html;
+  } catch (e) { out.innerHTML = '<span class="err">'+e.message+'</span>'; }
+};
+</script>
+</body>
+</html>
