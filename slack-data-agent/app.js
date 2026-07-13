@@ -200,8 +200,7 @@ async function handleQuestion(text, userId, channel, client) {
     case 'draw_table': return handleWhiteboardLink('table', channel, client);
 
     case 'dashboard':
-      await handleDashboard(text, userId, channel, client);
-      return { spoken: 'Publishing your dashboard — the chart will appear here in a moment.' };
+      return handleDashboard(text, userId, channel, client);
   }
 
   const plan = await planQuery(text, ctx);
@@ -520,21 +519,79 @@ async function doLoad(userId, channel, client, base, medallion, mode = 'replace'
  * generates the .twb, embeds a CSV snapshot of the table, publishes to Tableau, and renders a PNG.
  * We post the PNG in-channel with a link to the live workbook.
  */
+// Which of the existing tables does the message actually refer to? The model reads the
+// message (typos, plurals, "the signups table" all work) — no name-matching rules.
+async function tablesMentioned(text, all) {
+  const r = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || 'gpt-5.6-terra',
+      input: [{ role: 'user', content:
+        `Existing tables: ${all.join(', ')}\n\nMessage: ${text}\n\n` +
+        `Which of the existing tables does the message explicitly mention or unambiguously refer to? ` +
+        `Reply JSON only: {"tables": ["..."]}. Use an empty list if it names none of them.` }],
+    }),
+  });
+  if (!r.ok) throw new Error(`table detection ${r.status}`);
+  const p = await r.json();
+  const msg = (p.output || []).find(o => o.type === 'message');
+  let t = ((msg?.content || []).find(c => c.type === 'output_text')?.text || '').replace(/```(json)?/g, '').trim();
+  const a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if (a !== -1 && b > a) t = t.slice(a, b + 1);
+  const valid = new Set(all);
+  return (JSON.parse(t).tables || []).filter(x => valid.has(x));
+}
+
+const pendingDash = new Map(); // userId -> original dashboard request, while we ask for the table
+
 async function handleDashboard(text, userId, channel, client) {
+  const ctx = ctxOf(userId);
+  const { listTables: vizTables } = await import('../viz-builder/spec.js');
+  const all = await vizTables(ctx.catalog, ctx.schema).catch(() => []);
+  if (!all.length) {
+    await post(client, channel, `:no_entry: No tables in *${ctx.catalog}.${ctx.schema}* to chart.`);
+    return { spoken: `There are no tables in ${ctx.catalog}.${ctx.schema} to chart yet.` };
+  }
+
+  // The chart design is the model's judgment — but the TABLE is the user's call.
+  // If the request doesn't anchor one, ask before building anything.
+  let named = [];
+  try { named = await tablesMentioned(text, all); } catch { /* fall through to asking */ }
+  if (!named.length) {
+    pendingDash.set(userId, text);
+    await post(client, channel, 'Which table should this dashboard use?', [
+      { type: 'section', text: { type: 'mrkdwn', text: ':bar_chart: *Which table should this dashboard use?* Pick one and I\'ll design the best chart for it.' } },
+      { type: 'actions', elements: [{
+        type: 'static_select', action_id: 'dash_pick_table',
+        placeholder: { type: 'plain_text', text: 'Choose a table' },
+        options: all.slice(0, 100).map(t => ({ text: { type: 'plain_text', text: t }, value: t })),
+      }] },
+    ]);
+    return { spoken: 'Which table should the dashboard use? I posted the list — pick one and I will design the chart.' };
+  }
+
+  await buildDashboard(text, named, userId, channel, client);
+  return { spoken: 'Publishing your dashboard — the chart will appear here in a moment.' };
+}
+
+app.action('dash_pick_table', async ({ ack, body, client }) => {
+  await ack();
+  const table = body.actions[0].selected_option.value;
+  const text = pendingDash.get(body.user.id) || `create a dashboard with ${table}`;
+  pendingDash.delete(body.user.id);
+  await buildDashboard(`${text} — use the table ${table}`, [table], body.user.id, body.channel.id, client);
+});
+
+async function buildDashboard(text, candidates, userId, channel, client) {
   const ctx = ctxOf(userId);
   const status = await post(client, channel, ':bar_chart: Reading the table and choosing a chart…');
   const edit = t => client.chat.update({ channel, ts: status.ts, text: t }).catch(() => {});
 
   try {
-    const { describeToSpec, listTables: vizTables } = await import('../viz-builder/spec.js');
+    const { describeToSpec } = await import('../viz-builder/spec.js');
     const { buildAndDeploy, loadEnv } = await import('../viz-builder/deploy.js');
     const env = loadEnv();
-
-    // Chart whatever table the user named; if they named none, let the model pick from all of them.
-    const all = await vizTables(ctx.catalog, ctx.schema);
-    const named = all.filter(t => new RegExp(`\\b${t}\\b`, 'i').test(text));
-    const candidates = named.length ? named : all;
-    if (!candidates.length) { await edit(`:no_entry: No tables in *${ctx.catalog}.${ctx.schema}* to chart.`); return; }
 
     const res = await describeToSpec(ctx.catalog, ctx.schema, candidates, text);
     if (!res.ok) { await edit(`:no_entry: ${res.reason}`); return; }
