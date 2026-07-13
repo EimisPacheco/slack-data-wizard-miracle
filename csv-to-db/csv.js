@@ -45,7 +45,9 @@ const GROUPED_NUM_RE = /^-?\d{1,3}(,\d{3})+(\.\d+)?$/;
 const ungroup = v => (GROUPED_NUM_RE.test(String(v)) ? String(v).replace(/,/g, '') : String(v));
 
 /**
- * Infers a MySQL column type from every value in the column.
+ * Infers a generic SQL column type from every value in the column. These names
+ * (INT/BIGINT/DOUBLE/BOOLEAN/DATETIME/DATE/VARCHAR/TEXT) are a portable vocabulary that the
+ * caller maps to its target engine — `medallion.js` maps them to Databricks types.
  * Widens on conflict: an INT column containing "3.5" becomes DOUBLE; anything
  * unrecognised falls back to VARCHAR/TEXT sized to the longest value seen.
  */
@@ -68,7 +70,7 @@ export function inferType(values) {
   return longest > 1000 ? 'TEXT' : `VARCHAR(${Math.min(Math.max(longest * 2, 32), 1000)})`;
 }
 
-/** Coerces a CSV string into the JS value mysql2 should bind for the given column type. */
+/** Coerces a CSV string into the JS value to insert for the given inferred column type. */
 export function coerce(value, type) {
   if (isEmpty(value)) return null;
   if (type === 'INT' || type === 'BIGINT') return parseInt(ungroup(value), 10);
@@ -77,7 +79,7 @@ export function coerce(value, type) {
   return value;
 }
 
-/** MySQL identifiers: strip anything hostile, prefix if it would start with a digit. */
+/** SQL identifiers: strip anything hostile, prefix if it would start with a digit. */
 export function safeIdent(name) {
   const cleaned = String(name).trim().replace(/[^A-Za-z0-9_]/g, '_').replace(/_{2,}/g, '_');
   if (!cleaned) throw new Error(`Column name "${name}" is empty after sanitising`);

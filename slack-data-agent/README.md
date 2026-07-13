@@ -4,7 +4,7 @@ A Slack agent for managing a Databricks lakehouse in plain English: upload CSVs,
 bronze/silver/gold pipelines, create and switch catalogs and schemas, and query — no SQL required.
 
 Backed by **Databricks Free Edition** via the SQL Statement Execution API (one serverless
-warehouse, auto-starting). Replaces the earlier AWS RDS MySQL version.
+warehouse, auto-starting).
 
 ## What it does
 
@@ -57,10 +57,10 @@ to click **Run it**. Nothing destructive runs without a click.
   Comments/strings are stripped first; multi-statement input is refused; `CREATE OR REPLACE`
   and `MERGE`/`DROP`/`DELETE`/`TRUNCATE`/`UPDATE`/`VACUUM` require confirmation;
   `CREATE USER`/`GRANT` are refused.
-- **Honest limitation:** Databricks Free Edition has no per-statement read-only role, so
-  unlike the MySQL version there is **no second least-privilege enforcement layer**. The
-  token has full access. Destructive operations rely on the classifier + human confirmation
-  alone. Don't point this at production data.
+- **Honest limitation:** Databricks Free Edition has no per-statement read-only role, so there
+  is **no least-privilege enforcement layer** — the token has full access. Destructive
+  operations rely on the classifier + human confirmation alone. Don't point this at
+  production data.
 
 ## Medallion pipeline
 

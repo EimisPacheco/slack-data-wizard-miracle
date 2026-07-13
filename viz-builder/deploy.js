@@ -92,7 +92,7 @@ export async function buildAndDeploy(spec, { workbookName, outDir, catalog, sche
   fs.writeFileSync(path.join(dir, 'Data', `${spec.table}.csv`), csv);
 
   const twbName = `${spec.table}_${spec.chartType}.twb`;
-  fs.writeFileSync(path.join(dir, twbName), generateTwb({ env, spec, columns }));
+  fs.writeFileSync(path.join(dir, twbName), generateTwb({ spec, columns }));
 
   // package .twbx = zip of the .twb + Data/
   const twbx = path.join(dir, `${spec.table}_${spec.chartType}.twbx`);

@@ -1,5 +1,6 @@
 /**
- * Generates a Tableau .twb from a viz spec + a live MySQL table schema.
+ * Generates a Tableau .twb from a viz spec + a table's columns. The data is embedded as a CSV
+ * snapshot inside the .twbx, so the workbook has no live connection.
  *
  * Modelled field-by-field on Tableau's own Superstore / World Indicators workbooks.
  * The load-bearing lessons, learned the hard way:
@@ -56,8 +57,7 @@ function ref(name) { return `[${DS}].${name}`; }
  * }
  * columns = [{ name, type }]  from information_schema
  */
-export function generateTwb({ env, spec, columns }) {
-  const { MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_DATABASE } = env;
+export function generateTwb({ spec, columns }) {
   const table = spec.table;
 
   const colTypes = Object.fromEntries(columns.map(c => [c.name, tableauType(c.type)]));

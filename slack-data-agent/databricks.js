@@ -2,9 +2,9 @@
  * Databricks SQL client over the Statement Execution API.
  * Free Edition gives one serverless warehouse; it auto-starts on first query.
  *
- * Note on safety: Free Edition has no per-statement read-only role, so the
- * "least-privilege reader" guarantee from the MySQL version is not available here.
- * Destructive statements are gated by guard.js + human confirmation only.
+ * Note on safety: Free Edition has no per-statement read-only role, so there is no
+ * least-privilege reader guarantee. Destructive statements are gated by guard.js +
+ * human confirmation only.
  */
 
 const HOST = () => process.env.DATABRICKS_HOST;

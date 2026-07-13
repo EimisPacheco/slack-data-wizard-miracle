@@ -1,11 +1,10 @@
 /**
  * Classifies LLM-generated SQL before anything executes.
  *
- * Two independent defences, because either alone is insufficient:
- *   1. This classifier decides whether a human must confirm.
- *   2. Reads run as `agent_ro`, which MySQL forbids from writing at all.
- * A classifier bug therefore cannot destroy data, and a prompt injection that
- * defeats the classifier still hits a database user with no write grants.
+ * Databricks Free Edition has no per-statement read-only role, so this classifier plus the
+ * human-confirmation step it triggers are the only thing standing between a model-authored
+ * statement and your data. It normalises the statement first (comments and string literals
+ * stripped) so a keyword hidden inside a quoted value cannot fool the classification.
  */
 
 export const KIND = {

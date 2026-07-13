@@ -2,8 +2,6 @@
   "name": "csv-to-db",
   "version": "1.0.0",
   "type": "module",
-  "description": "Upload a CSV to MySQL, creating the table from the CSV's inferred schema if it doesn't exist.",
-  "bin": { "csv-to-db": "./index.js" },
-  "scripts": { "start": "node index.js" },
-  "dependencies": { "mysql2": "^3.11.0" }
+  "description": "RFC-4180 CSV parser and column-type inference used by the Slack agent to load CSVs.",
+  "main": "csv.js"
 }

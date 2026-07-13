@@ -7,21 +7,18 @@ renders the view, and returns a PNG.
 ```
 question + tables
    │
-   ├─ spec.js   NL → viz spec        (OpenAI, validated against live schema)
-   ├─ twbgen.js spec → .twb XML       (modelled on Tableau's own workbooks)
-   ├─ publish.py .twb → Tableau Cloud  (tableauserverclient, embedded MySQL creds)
-   └─ deploy.js  get-view image → PNG
+   ├─ spec.js   NL → viz spec         (Gemma/OpenAI, validated against the live Databricks schema)
+   ├─ deploy.js snapshot table → CSV, embed in the .twbx, publish, render
+   ├─ twbgen.js spec → .twb XML        (embedded-CSV connection, modelled on Tableau's own workbooks)
+   └─ publish.py .twb → Tableau Cloud   (tableauserverclient; no live connection, so no DB creds)
 ```
 
-## Usage
+## How it's invoked
 
-```bash
-export TSC_PYTHON=/path/to/venv/bin/python     # a Python with tableauserverclient
-node build.js --tables world_perspectives_sample --ask "which countries agree most?"
-node build.js --tables hackathon_signups --ask "signups per country" --chart bar
-```
-
-`--chart` overrides the chart type the model picks. `--out <dir>` sets where the PNG lands.
+It's a library, called by the Slack agent's dashboard command — a user types
+_"create a dashboard with hackathon_signups"_ and `app.js` runs `describeToSpec()` (spec.js)
+then `buildAndDeploy()` (deploy.js). Publishing needs `TSC_PYTHON` pointing at a Python with
+`tableauserverclient` installed.
 
 ## Chart types (all verified end-to-end against a live site)
 

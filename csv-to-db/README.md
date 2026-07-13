@@ -1,53 +1,43 @@
 # csv-to-db
 
-Uploads a CSV into MySQL. If the target table doesn't exist, it is created from the
-schema inferred from the CSV. Credentials come from `../.env` (`MYSQL_*`).
+The CSV-ingestion library for the Slack agent. It parses a CSV (RFC-4180: quoted fields,
+embedded commas and newlines, escaped quotes) and infers a column type for every column. The
+Slack agent hands the result to `medallion.js`, which maps the inferred types to Databricks and
+loads the rows.
 
-## Usage
+No CLI and no database driver of its own — it's imported, not run:
 
-```bash
-cd csv-to-db
-npm install
-
-node index.js samples/hackathon_signups.csv            # create table if needed, insert
-node index.js data.csv --table my_table                # override the table name
-node index.js data.csv --truncate                      # replace rows instead of appending
-node index.js data.csv --dry-run                       # print inferred DDL, touch nothing
-node index.js data.csv --batch 1000                    # rows per INSERT (default 500)
+```js
+import { analyseCsv } from './csv.js';
+const { columns, dataRows } = analyseCsv(csvText);
+// columns: [{ name, type }]   dataRows: string[][]
 ```
-
-Table name defaults to the CSV's filename.
 
 ## Type inference
 
-Every value in a column is examined; the type widens on conflict.
+Every value in a column is examined; the type widens on conflict. The names are a portable SQL
+vocabulary — `medallion.js` maps them to Databricks types (`STRING`, `TIMESTAMP`, …).
 
-| CSV column contains | MySQL type |
+| CSV column contains | inferred type |
 |---|---|
 | only integers | `INT`, or `BIGINT` past 2³¹ |
 | integers and decimals | `DOUBLE` |
-| only `true`/`false` | `BOOLEAN` (stored as `tinyint(1)`) |
+| only `true`/`false` | `BOOLEAN` |
 | `YYYY-MM-DD HH:MM[:SS]` | `DATETIME` |
 | `YYYY-MM-DD` | `DATE` |
 | anything else | `VARCHAR(n)`, or `TEXT` past 1000 chars |
 
-An empty cell is `NULL`. A column that is empty in every row becomes `TEXT`.
+An empty cell is `NULL`. A column that is empty in every row becomes `TEXT`. Thousands
+separators are handled: `1,476,625,576` is read as the number, so numeric sorts are correct.
 
-## Behaviour worth knowing
+## Notes
 
-- **Appends by default.** Running twice inserts the rows twice. Use `--truncate` to replace.
-- **Refuses schema drift.** If the table exists but lacks a column the CSV has, it aborts
-  rather than dropping data. Extra columns in the table are fine.
-- **All-or-nothing.** Inserts run in a transaction and roll back on any error.
-- **Identifiers are sanitised** (`My Column!` → `My_Column`) and a leading digit gets a `c_`
-  prefix. Duplicate names after sanitising are rejected.
-- **Datetimes are read in the server's local timezone.** `09:15:00` in the CSV comes back as
-  `13:15Z` on a UTC-4 machine. Store UTC in the CSV if that matters.
-- Values are always bound as parameters, never interpolated. Identifiers are quoted with
-  backticks after sanitising.
+- **Identifiers are sanitised** (`My Column!` → `My_Column`); a leading digit gets a prefix, and
+  duplicate names after sanitising are rejected.
+- Datetimes are parsed as written; store UTC in the CSV if timezone matters.
 
-## Why this exists
+## Where it fits
 
-It's the ingestion half of the Slack agent: a user drops a CSV into a channel, the bot
-downloads it via `url_private_download` (with a `Bearer` token — without one Slack returns
-an HTML login page, not the file), and hands the bytes to `analyseCsv()` from `csv.js`.
+A user drops a CSV into a channel; the bot downloads it via `url_private_download` (with a
+`Bearer` token — without one Slack returns an HTML login page, not the file) and passes the bytes
+to `analyseCsv()`.

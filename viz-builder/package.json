@@ -1,16 +1,8 @@
 {
   "name": "viz-builder",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
+  "description": "Natural-language → Tableau workbook: generates a .twb with an embedded CSV snapshot and publishes it. Called by the Slack agent's dashboard command.",
+  "main": "deploy.js",
   "license": "ISC",
-  "dependencies": {
-    "mysql2": "^3.22.6"
-  },
   "type": "module"
 }
