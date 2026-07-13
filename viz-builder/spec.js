@@ -29,7 +29,12 @@ RULES:
 - hbar suits many categories or long labels; bar suits few.
 - For "how many X", use aggregation COUNT.
 - Omit fields that don't apply.
-- If it can't be charted from the schema, set "table" to "" and say why in "explanation".`;
+- If the request is vague or names no table, metric or chart ("make a dashboard", "show me something"),
+  DO NOT ask for clarification and DO NOT refuse. You are the analyst: pick the most interesting table —
+  one with a categorical or date dimension and a numeric measure (or countable rows) — and design the
+  most informative chart for it yourself. Prefer business-flavoured tables over technical/staging ones
+  (skip _bronze/_silver copies when a cleaner variant exists).
+- Only set "table" to "" when the schema truly contains nothing chartable, and say why in "explanation".`;
 
 /** Columns for each table in the active Databricks namespace. */
 export async function schemaOf(catalog, schema, tables) {
