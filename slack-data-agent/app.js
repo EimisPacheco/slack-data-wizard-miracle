@@ -23,7 +23,7 @@ const { buildPipeline, loadFlatTable } = await import('./medallion.js');
 const { analyseCsv } = await import('../csv-to-db/csv.js');
 const { extractPdf } = await import('../pdf-extract/extract.js');
 const { card, cardClassic, dataTable, tableClassic, postRich } = await import('./blocks.js');
-const { fromSearch, synthetic, detectSource } = await import('../datagen/datagen.js');
+const { fromSearch, synthetic } = await import('../datagen/datagen.js');
 
 const DEFAULT_CATALOG = process.env.DATABRICKS_CATALOG || 'workspace';
 const DEFAULT_SCHEMA = process.env.DATABRICKS_SCHEMA || 'data_wizard';
@@ -76,63 +76,48 @@ const HELP_TEXT =
 *Change data (always confirmed first)*
 • _"drop the bronze table"_, _"delete inactive users"_ — I show the SQL and wait for your click.`;
 
-// Loose phrasing: pull a catalog/schema name out of varied wording.
-const NAME = `["'\`]?([A-Za-z0-9_]+)["'\`]?`;
+// ─────────────────────────── AI intent router ───────────────────────────
+// No keyword rules and no regex: OpenAI reads every message and decides what the user
+// wants. Phrasing, word order and even language don't matter — "where am I",
+// "where I am?" and "¿dónde estoy?" all resolve to the same intent.
 
-async function tryContextCommand(text, userId, channel, client) {
-  // Slack sends code-formatted text with backticks (`list tables`); strip them or the
-  // ^-anchored patterns below never match. Underscores are kept — table names use them.
-  const raw = text.trim().replace(/`/g, '').trim();
-  const t = raw.replace(/[?.!]+$/, '');
-  const ctx = ctxOf(userId);
-  let m;
+const ROUTER_SYSTEM = `You are the intent router for Data Wizard, a Slack data assistant.
+Classify the user's message. Reply with JSON only:
+{"intent":"<one from the list>","name":"<identifier>","description":"<text>","source":"real|synthetic|ask"}
 
-  if (/^(help|commands|what can (i|you) do)$/i.test(t) || raw === '?') {
-    await post(client, channel, HELP_TEXT);
-    return true;
-  }
-  if (/\b(context|where am i|whoami|current (catalog|schema|namespace))\b/i.test(t) && !/\b(create|use|switch|list|show|table)\b/i.test(t)) {
-    await post(client, channel, `You're in *${ctx.catalog}.${ctx.schema}*.`);
-    return true;
-  }
-  // NOTE: listing (SHOW CATALOGS/SCHEMAS/TABLES) and object creation (CREATE SCHEMA/CATALOG/TABLE)
-  // are NOT matched here — OpenAI writes the SQL for those and it runs through the safety guard.
-  // Only true app-state commands stay hard-coded, because they aren't SQL: our Databricks calls
-  // are stateless (catalog/schema are passed per statement), so "use X" must be tracked in-app.
-  if ((m = t.match(new RegExp(`\\b(?:use|switch to|go to|change to|open)\\b.*\\bcatalog\\s+${NAME}`, 'i')))) {
-    ctx.catalog = m[1]; ctx.schema = 'default';
-    await post(client, channel, `Switched to catalog *${ctx.catalog}* (schema reset to \`default\`).`);
-    return true;
-  }
-  if ((m = t.match(new RegExp(`\\b(?:use|switch to|go to|change to|open)\\b.*\\b(?:schema|database)\\s+${NAME}`, 'i')))) {
-    ctx.schema = m[1];
-    await post(client, channel, `Now using *${ctx.catalog}.${ctx.schema}*.`);
-    return true;
-  }
-  return false;
+Intents:
+- "help"           — asks what the assistant can do, its commands or capabilities.
+- "context"        — asks where they are working / their current catalog or schema, in any phrasing ("where am I", "where I am?", "context", "whoami").
+- "use_catalog"    — wants to switch to / work in a catalog. Put the bare catalog name in "name".
+- "use_schema"     — wants to switch to / work in a schema or database. Put the bare schema name in "name".
+- "generate_data"  — wants NEW data created or fetched: a table of real-world facts, or fake/synthetic/sample/test rows. Put what they want in "description". Set "source" to "real" for true web-sourced figures, "synthetic" for fake/test rows, "ask" if unclear.
+- "dashboard"      — wants a chart/dashboard/visualization built from existing tables, described in words.
+- "draw_dashboard" — wants to DRAW or SKETCH the dashboard/chart themselves (whiteboard, drawing).
+- "draw_table"     — wants to DRAW a table by hand on the whiteboard.
+- "query"          — everything else: questions about data, listing or inspecting catalogs/schemas/tables/columns, creating objects via DDL, changing or deleting data.
+
+Only include "name", "description" or "source" when they apply. When in doubt, use "query".`;
+
+async function routeIntent(text) {
+  const r = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || 'gpt-5.6-terra',
+      input: [{ role: 'system', content: ROUTER_SYSTEM }, { role: 'user', content: text }],
+    }),
+  });
+  if (!r.ok) throw new Error(`router ${r.status}: ${(await r.text()).slice(0, 120)}`);
+  const p = await r.json();
+  const msg = (p.output || []).find(o => o.type === 'message');
+  let t = ((msg?.content || []).find(c => c.type === 'output_text')?.text || '').replace(/```(json)?/g, '').trim();
+  const a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if (a !== -1 && b > a) t = t.slice(a, b + 1);
+  return JSON.parse(t);
 }
 
-// ─────────────────────────── natural-language queries ───────────────────────────
-
-// "create/make/generate a table of <description>" → data generation, not SQL.
-const DATAGEN_RE = /^(?:create|make|generate|build|get|fetch|pull)\s+(?:me\s+)?(?:a\s+|an\s+)?(?:table|dataset|data)\s+(?:of|about|on|for|with|from)\s+(.+)/i;
-
-// The strict form misses real phrasings ("create a vendors table with synthetic data",
-// "generate 20 fake employees") — those fell through to NL→SQL, which can only CREATE an
-// empty table. So: any create-verb sentence that names a data source (fake/real/etc.) is
-// data generation too — unless it's a dashboard/whiteboard request, which owns those words.
-const DATAGEN_SOURCE_RE = /\b(fake|synthetic|dummy|sample|mock|random|made[- ]?up|placeholder|real|actual|from the (?:web|internet)|perplexity)\b/i;
-
-function detectDataGen(text) {
-  const m = text.match(DATAGEN_RE);
-  if (m) return m[1].trim();
-  if (/^(?:please\s+)?(?:create|make|generate|build|get|fetch|pull)\b/i.test(text)
-      && DATAGEN_SOURCE_RE.test(text)
-      && !VIZ_RE.test(text) && !DRAW_RE.test(text)) {
-    return text.replace(/^(?:please\s+)?(?:create|make|generate|build|get|fetch|pull)\s+(?:me\s+)?/i, '').trim();
-  }
-  return null;
-}
+// SQL identifiers are word characters only — mechanical cleanup, not language understanding.
+const cleanIdent = s => String(s || '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 64);
 
 /**
  * Cleans a filename or description into a sensible SUGGESTED table name. Real exports look like
@@ -153,19 +138,11 @@ function suggestTableName(raw) {
   return n.slice(0, 40);
 }
 
-// "create a dashboard / chart / graph / visualisation of <…>" → Tableau, not SQL.
-// Without this the request fell through to NL→SQL, and the model answered the only question it
-// was asked ("what SQL does this?") with a flat "I cannot create a dashboard" — technically true
-// of a SQL statement, but wrong about what Data Wizard can do.
-const VIZ_RE = /\b(dash?boards?|darshboards?|charts?|graphs?|visuali[sz]\w*|visual|viz|plots?)\b/i;
-
 // "draw / sketch a dashboard" → the whiteboard web app (Slack can't host a canvas natively).
-// Must be checked before VIZ_RE or "draw a dashboard" falls through to the typed-request flow.
-const DRAW_RE = /\b(draw|sketch|doodle|whiteboard)\b/i;
+// The AI router decides table vs dashboard mode; this just posts the link.
 const WHITEBOARD_URL = (process.env.WHITEBOARD_URL || 'http://localhost:3200').replace(/\/$/, '');
 
-async function handleWhiteboardLink(text, channel, client) {
-  const mode = /\btable\b/i.test(text) && !VIZ_RE.test(text) ? 'table' : 'dashboard';
+async function handleWhiteboardLink(mode, channel, client) {
   const url = `${WHITEBOARD_URL}/?mode=${mode}&channel=${channel}`;
   const body = mode === 'dashboard'
     ? ':art: *Draw your dashboard* — sketch the chart you want (bars, a line…), write the table name on the board, then click *Build dashboard*. I publish it to Tableau and post the chart back here.'
@@ -183,16 +160,50 @@ async function handleWhiteboardLink(text, channel, client) {
 }
 
 async function handleQuestion(text, userId, channel, client) {
-  if (await tryContextCommand(text, userId, channel, client)) return {};
-
-  const dg = detectDataGen(text);
-  if (dg) { await handleDataGen(dg, userId, channel, client); return { spoken: 'Working on your table — a preview will post here shortly.' }; }
-
-  if (DRAW_RE.test(text)) return handleWhiteboardLink(text, channel, client);
-
-  if (VIZ_RE.test(text)) { await handleDashboard(text, userId, channel, client); return { spoken: 'Publishing your dashboard — the chart will appear here in a moment.' }; }
-
   const ctx = ctxOf(userId);
+
+  // One model call decides what the user wants. If the router itself fails, fall through
+  // to the query path — which is also the model.
+  let route;
+  try { route = (await routeIntent(text)) || {}; } catch { route = { intent: 'query' }; }
+
+  switch (route.intent) {
+    case 'help':
+      await post(client, channel, HELP_TEXT);
+      return { spoken: 'I posted the full list of what I can do.' };
+
+    case 'context':
+      await post(client, channel, `You're in *${ctx.catalog}.${ctx.schema}*.`);
+      return { spoken: `You're working in ${ctx.catalog}, schema ${ctx.schema}.` };
+
+    case 'use_catalog': {
+      const name = cleanIdent(route.name);
+      if (!name) break;
+      ctx.catalog = name; ctx.schema = 'default';
+      await post(client, channel, `Switched to catalog *${ctx.catalog}* (schema reset to \`default\`).`);
+      return { spoken: `Switched to catalog ${name}.` };
+    }
+
+    case 'use_schema': {
+      const name = cleanIdent(route.name);
+      if (!name) break;
+      ctx.schema = name;
+      await post(client, channel, `Now using *${ctx.catalog}.${ctx.schema}*.`);
+      return { spoken: `Now using schema ${name}.` };
+    }
+
+    case 'generate_data':
+      await handleDataGen(route.description?.trim() || text, route.source, userId, channel, client);
+      return { spoken: 'Working on your table — a preview will post here shortly.' };
+
+    case 'draw_dashboard': return handleWhiteboardLink('dashboard', channel, client);
+    case 'draw_table': return handleWhiteboardLink('table', channel, client);
+
+    case 'dashboard':
+      await handleDashboard(text, userId, channel, client);
+      return { spoken: 'Publishing your dashboard — the chart will appear here in a moment.' };
+  }
+
   const plan = await planQuery(text, ctx);
   if (!plan.ok) { await post(client, channel, `:no_entry: ${plan.reason}`); return { spoken: `I couldn't answer that. ${plan.reason}` }; }
 
@@ -271,8 +282,9 @@ app.action('confirm_sql', async ({ ack, body, client }) => {
 
 const pendingGen = new Map(); // userId -> description (for the ambiguous "ask" case)
 
-async function handleDataGen(description, userId, channel, client) {
-  const which = detectSource(description);
+async function handleDataGen(description, source, userId, channel, client) {
+  // The AI router already judged the source; anything unclear falls back to asking the user.
+  const which = source === 'real' || source === 'synthetic' ? source : 'ask';
   if (which === 'ask') {
     pendingGen.set(userId, description);
     const opts = {
