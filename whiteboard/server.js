@@ -69,18 +69,20 @@ const { buildAndDeploy, loadEnv } = await import(path.join(ROOT, 'viz-builder', 
 const { WebClient } = await import('@slack/web-api');
 const slack = process.env.SLACK_BOT_TOKEN ? new WebClient(process.env.SLACK_BOT_TOKEN) : null;
 
-const SKETCH_PROMPT = tables =>
+const SKETCH_PROMPT = (tables, hint) =>
 `This image is a hand-drawn whiteboard SKETCH of a chart the user wants built from their data.
-Available tables: ${tables.join(', ')}.
-Read the drawing: the chart shape (vertical bars, horizontal bars, a line, scattered dots) and any
-handwritten words (title, axis labels, category names, a table name).
-Reply with ONE short sentence describing the chart to build — chart type, table (the written one,
-or the closest available), and fields — e.g.:
+Available tables: ${tables.join(', ')}.${hint ? `
+The user also typed this hint — treat it as authoritative, especially for which table to use: "${hint}".` : ''}
+Read the drawing: the chart shape (vertical bars, horizontal bars, a line, scattered dots, a circle
+with slices = share per category) and any handwritten words (title, axis labels, category names, a
+table name).
+Reply with ONE short sentence describing the chart to build — chart type, table (the hint's table if
+given, else the written one, else the closest available), and fields — e.g.:
 "a bar chart of count of signups by country from hackathon_signups"
 No JSON. No markdown. One sentence only.`;
 
-async function describeSketch(png, tables) {
-  const text = (await callVision(SKETCH_PROMPT(tables), png)).trim();
+async function describeSketch(png, tables, hint) {
+  const text = (await callVision(SKETCH_PROMPT(tables, hint), png)).trim();
   if (!text) throw new Error('empty vision reply');
   return text;
 }
@@ -96,7 +98,7 @@ app.post('/dashboard', async (req, res) => {
     const tables = await listTables(c, s);
     if (!tables.length) return res.json({ ok: false, message: `No tables in ${c}.${s} to chart — load some data first.` });
 
-    const described = await describeSketch(png, tables);
+    const described = await describeSketch(png, tables, (hint || '').trim());
     const request = hint ? `${described} (user hint: ${hint})` : described;
     const specRes = await describeToSpec(c, s, tables, request);
     if (!specRes.ok) return res.json({ ok: false, message: specRes.reason, described });

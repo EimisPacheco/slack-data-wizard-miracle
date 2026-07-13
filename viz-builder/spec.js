@@ -25,6 +25,8 @@ Reply with JSON only:
 RULES:
 - Use ONLY tables and columns from the schema provided. Never invent names.
 - For geographic data (countries, regions), use bar or hbar grouped by that column — never a map.
+- A pie or donut request means "share per category": build a bar (or hbar) of that same grouping
+  instead — never refuse because pies aren't offered.
 - line requires a date/timestamp dimension.
 - hbar suits many categories or long labels; bar suits few.
 - For "how many X", use aggregation COUNT.
@@ -86,6 +88,8 @@ export async function describeToSpec(catalog, schema, tables, description) {
     if (spec.geoField && !spec.dimension) spec.dimension = spec.geoField;
     delete spec.geoField;
   }
+  // A pie is "share per category" — the bar of the same grouping. Belt-and-braces with the prompt.
+  if (spec.chartType === 'pie' || spec.chartType === 'donut') spec.chartType = 'bar';
 
   // The model still occasionally invents a column — validate against the real schema.
   const cols = new Set((s[spec.table] || []).map(c => c.name.toLowerCase()));
