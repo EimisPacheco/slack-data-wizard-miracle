@@ -1,5 +1,5 @@
 import { rasterize } from './rasterize.js';
-import { extractTable } from './gemma.js';
+import { extractTable } from './vision.js';
 
 /** CSV-escape one value. */
 function csvCell(v) {

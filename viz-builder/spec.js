@@ -1,13 +1,11 @@
 /**
  * Natural-language description -> Tableau viz spec, validated against the live Databricks schema.
- * Uses the same model provider as the rest of Data Wizard (NL2SQL_PROVIDER: gemma | openai).
+ * Uses the same OpenAI model as the rest of Data Wizard (OPENAI_MODEL).
  */
 import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const dbx = await import(path.join(ROOT, 'slack-data-agent', 'databricks.js'));
-
-const PROVIDER = () => (process.env.NL2SQL_PROVIDER || 'gemma').toLowerCase();
 
 const SYSTEM = `You turn a request for a chart into a Tableau visualization spec.
 
@@ -49,29 +47,16 @@ function schemaText(s) {
 }
 
 async function callModel(system, user) {
-  if (PROVIDER() === 'openai') {
-    const r = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: process.env.OPENAI_MODEL || 'gpt-5.6-terra',
-        input: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
-    });
-    if (!r.ok) throw new Error(`OpenAI ${r.status}: ${(await r.text()).slice(0, 150)}`);
-    const p = await r.json();
-    const msg = (p.output || []).find(o => o.type === 'message');
-    return (msg?.content || []).find(c => c.type === 'output_text')?.text || '';
-  }
-  const base = (process.env.GEMMA_BASE_URL || '').replace(/\/$/, '');
-  const r = await fetch(`${base}/api/chat`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: process.env.GEMMA_MODEL || 'gemma4:31b',
-      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      stream: false, think: false, format: 'json', options: { temperature: 0 },
-    }),
+  const r = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: process.env.OPENAI_MODEL || 'gpt-5.6-terra',
+      input: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
   });
-  if (!r.ok) throw new Error(`Gemma ${r.status}: ${(await r.text()).slice(0, 150)}`);
-  return (await r.json()).message?.content || '';
+  if (!r.ok) throw new Error(`OpenAI ${r.status}: ${(await r.text()).slice(0, 150)}`);
+  const p = await r.json();
+  const msg = (p.output || []).find(o => o.type === 'message');
+  return (msg?.content || []).find(c => c.type === 'output_text')?.text || '';
 }
 
 /** description + tables -> validated spec */

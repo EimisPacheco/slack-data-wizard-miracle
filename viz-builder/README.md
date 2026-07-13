@@ -7,7 +7,7 @@ renders the view, and returns a PNG.
 ```
 question + tables
    │
-   ├─ spec.js   NL → viz spec         (Gemma/OpenAI, validated against the live Databricks schema)
+   ├─ spec.js   NL → viz spec         (OpenAI, validated against the live Databricks schema)
    ├─ deploy.js snapshot table → CSV, embed in the .twbx, publish, render
    ├─ twbgen.js spec → .twb XML        (embedded-CSV connection, modelled on Tableau's own workbooks)
    └─ publish.py .twb → Tableau Cloud   (tableauserverclient; no live connection, so no DB creds)

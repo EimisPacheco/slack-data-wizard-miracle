@@ -1,8 +1,8 @@
-# Devpost submission copy — Data Wizard (AMD Unicorn Track)
+# Devpost submission copy — Data Wizard
 
 ## Short Description (255 max)
 
-A data team for companies that don't have one. Upload a file, build a governed lakehouse, ask questions in plain English and publish a Tableau dashboard — by typing a sentence in Slack. Every act of reasoning runs on Gemma, open-source, on an AMD GPU.
+A data team for companies that don't have one. Upload a file, a scanned page or a whiteboard sketch; build a governed lakehouse; ask questions in plain English or by voice; publish Tableau dashboards — all inside Slack, all reasoned by OpenAI.
 
 ## Long Description (600 min / 2000 max)
 
@@ -10,15 +10,15 @@ Every company has data. Most don't have a data team. That gap is the market.
 
 In a small business, the people who own the data can't query it. The office manager holds the signup sheet. The clinic administrator holds scanned invoices. Neither writes SQL; neither has an engineer to ask. So the question never gets asked.
 
-Slack Data Wizard is that data team. Drop a CSV and it becomes a typed table, named in your words. Ask "how many signups per country?" and Gemma writes the SQL. Say "create a schema called sales" and Gemma writes the DDL. Say "build a medallion pipeline" and get bronze, silver and gold tables. Say "create a dashboard" and Gemma picks the chart and publishes a real Tableau workbook. Ask for "the top 10 countries by population" and Perplexity pulls the real figures from the internet, with citations — or OpenAI generates synthetic rows for testing. You can even ask by voice through an ElevenLabs agent, or reach the same tools from Claude and ChatGPT via MCP.
+Slack Data Wizard is that data team. Drop a CSV and it becomes a typed table, named in your words. Ask "how many signups per country?" and OpenAI writes the SQL. Say "create a schema called sales" and it writes the DDL. Say "build a medallion pipeline" and get bronze, silver and gold tables. Say "create a dashboard" and it picks the chart and publishes a real Tableau workbook. Ask for "the top 10 countries by population" and Perplexity pulls the real figures from the internet, with citations — or OpenAI generates synthetic rows for testing. Ask by voice note and ElevenLabs transcribes the question and speaks the answer back into the channel. Or reach the same tools from Claude and ChatGPT via MCP.
 
-Then drop in a scanned PDF — the case that matters most. Hospitals and billing offices still run on paper. Today a human retypes it. Gemma's vision reads the table straight off the page.
+Then drop in a scanned PDF — the case that matters most. Hospitals and billing offices still run on paper. Today a human retypes it. OpenAI's vision reads the table straight off the page.
 
-And that changes who touches the data: the person who produces it loads the lakehouse directly — no analyst, no engineer, no untracked copies in between. For sensitive records, the fewer people in the chain, the smaller the leak surface.
+And here is the part we're proudest of: say "draw a dashboard", and sketch the chart you want on a whiteboard — wobbly bars, handwritten labels, the table name in marker. OpenAI's vision reads the drawing itself, validates it against the live schema, publishes the Tableau workbook, and posts the chart back into Slack. BI has always demanded that users translate a mental image into analytics language. We removed the translation: the mental image is now the interface.
 
-So the AMD GPU is not an implementation detail. A scanned patient record is exactly the data you may not paste into a closed third-party API — HIPAA, GDPR. An open Gemma on your own AMD Instinct GPU (ROCm) means the page never leaves the building. Take it away and in regulated industries you get no product.
+That changes who touches the data: the person who produces it loads the lakehouse directly — no analyst, no engineer, no untracked copies in between. Every question and every change is a Slack message with a name and a timestamp — an audit trail nobody had to configure.
 
-A model that writes CREATE TABLE can also write DROP TABLE — so every statement is classified before it runs, and destructive ones wait for a click.
+A model that writes CREATE TABLE can also write DROP TABLE — so every statement is classified before it runs, and destructive ones wait for a click. Voice can never destroy data: destructive requests post the SQL and wait for a human.
 
 This deserves to win because it solves a real problem: it makes data handling faster, simpler and accessible to everyone.
 
@@ -42,24 +42,24 @@ Now watch. They drop in a scanned PDF.
 
 Walk into a hospital, a clinic, a medical billing office — and you will find paper. Scanned intake forms. Faxed lab results. Invoices that are pictures of paper, not data. This is not a legacy edge case. This is Tuesday. And today, a human retypes those numbers, one row at a time.
 
-Gemma's vision reads the table straight off the image — and the page becomes a real, queryable table.
+OpenAI's vision reads the table straight off the image — and the page becomes a real, queryable table.
 
 That saves hours. But look at what else it just did.
 
-Every one of those manual steps was a person handling records they didn't need to see. A spreadsheet on a laptop. A printout on a desk. A file emailed to a colleague — each one a copy nobody is tracking. With Data Wizard, the person who produces the data loads the lakehouse directly — no analyst in the middle, no engineer in the middle, no hand-offs at all. The fewer people who ever touch the data, the smaller the surface for a leak — and for the most sensitive records, the top-secret ones, the shortest chain is the safest one. So removing the retyping doesn't just remove the typos. It removes the exposure.
+Every one of those manual steps was a person handling records they didn't need to see. A spreadsheet on a laptop. A printout on a desk. A file emailed to a colleague — each one a copy nobody is tracking. With Data Wizard, the person who produces the data loads the lakehouse directly — no analyst in the middle, no engineer in the middle, no hand-offs at all. The fewer people who ever touch the data, the smaller the surface for a leak. So removing the retyping doesn't just remove the typos. It removes the exposure.
 
-And the model that read that page runs on your own AMD GPU. Which is exactly why the GPU here is not an implementation detail.
+Now the moment we're proudest of. This user doesn't know the words "dimension" and "measure" — but they know exactly what the chart should look like. So they say: "draw a dashboard."
 
-A scanned patient record is precisely the data you are not allowed to paste into a closed, third-party API. Protected health information is bound by HIPAA. By GDPR. Sending that page to someone else's model endpoint isn't a trade-off to weigh — it is simply not permitted.
+A whiteboard opens. They sketch it — wobbly bars, handwritten labels, the table name in marker. And OpenAI's vision reads the drawing itself. The shape of the bars picks the chart type. The handwriting names the table. Every column is validated against the live schema — and a real, published Tableau workbook posts back into the channel.
 
-An open model, on your own AMD Instinct GPU, means the page never leaves the building. Take the AMD GPU away, and you don't get a slower product — in regulated industries, you get no product at all.
+BI has always demanded that people translate a mental image into analytics language. We removed the translation. The mental image is now the interface.
 
-That same GPU does everything else. Gemma isn't a garnish here — Gemma is the reasoning. On AMD Developer Cloud, on ROCm, it writes the SQL when someone asks "how many signups per country". It writes the DDL when they say "create a schema called sales". It builds them a bronze, silver and gold lakehouse without ever using the word. It picks the chart when they ask for a dashboard — and publishes a real Tableau workbook back into the channel. Ask for the top ten countries by population and you get real, cited figures; ask out loud and an ElevenLabs voice agent answers and posts the transcript to Slack.
+The same model does everything else here — OpenAI is the reasoning. It writes the SQL when someone asks "how many signups per country". It writes the DDL when they say "create a schema called sales". It builds them a bronze, silver and gold lakehouse without ever using the word. It picks the chart when they ask for a dashboard. Ask for the top ten countries by population and you get real, cited figures. And you don't even have to type: record a voice note, ElevenLabs transcribes it, the answer comes back as a table — and as a spoken reply.
 
-One last thing, and it matters most for the people we built this for. A model that can write CREATE TABLE can also write DROP TABLE. So every statement Gemma produces is classified before it runs — and anything destructive waits for a human to click.
+One last thing, and it matters most for the people we built this for. A model that can write CREATE TABLE can also write DROP TABLE. So every statement the model produces is classified before it runs — and anything destructive waits for a human to click. Even by voice, nothing is ever destroyed without a click.
 
-So why does this deserve to win? Because it solves a real problem — it makes data handling faster, simpler and accessible to everyone. And because of who that unlocks: there are millions of small businesses, clinics and family firms that will never hire a data engineer — and every one of them makes decisions every single day. Data Wizard gives them the whole stack — ingestion, a governed lakehouse, safe SQL, published dashboards — for the cost of typing one sentence in a tool they already have open. That's the impact: this is not a nicer workflow for people who already have answers. It is the first answer for the people who had none.
+So why does this deserve to win? Because it solves a real problem — it makes data handling faster, simpler and accessible to everyone. And because of who that unlocks: there are millions of small businesses, clinics and family firms that will never hire a data engineer — and every one of them makes decisions every single day. Data Wizard gives them the whole stack — ingestion, a governed lakehouse, safe SQL, published dashboards — for the cost of typing one sentence in a tool they already have open. Or saying it. Or drawing it.
 
-Every company has data. Most don't have a data team. And the ones who need this most are the ones who can least afford to hand their data to anybody else.
+Every company has data. Most don't have a data team.
 
 That gap is the market. And it is one sentence in Slack away from closing.

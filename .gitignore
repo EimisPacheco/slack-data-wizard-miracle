@@ -17,3 +17,6 @@ venv/
 
 .slack/
 .DS_Store
+
+# Gemma/AMD backup — never commit to the OpenAI repo
+slack-data-agent-AMD/

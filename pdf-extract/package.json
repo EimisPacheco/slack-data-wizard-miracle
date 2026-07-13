@@ -2,5 +2,5 @@
   "name": "pdf-extract",
   "version": "1.0.0",
   "type": "module",
-  "description": "Scanned-PDF → structured rows via Gemma vision on AMD GPUs."
+  "description": "Scanned-PDF → structured rows via OpenAI vision."
 }

@@ -51,12 +51,12 @@ const HELP_TEXT =
 • \`context\` — your current catalog.schema
 • \`use catalog <name>\` / \`use schema <name>\` — switch
 
-*Ask Gemma anything — it writes the SQL*
+*Ask anything — the AI writes the SQL*
 • _"what catalogs are there?"_  _"list the tables"_  _"what columns does signups_silver have?"_
 • _"create a schema called sales"_  _"create a table of…"_
 
 *Load data*
-• Drop a *.csv* — or a *scanned .pdf* (Gemma reads the table from the image) — then pick
+• Drop a *.csv* — or a *scanned .pdf* (OpenAI vision reads the table from the image) — then pick
   *Load table* or *Build pipeline* (bronze/silver/gold).
 
 *Ask anything in plain English*
@@ -67,7 +67,7 @@ const HELP_TEXT =
 • _"generate 20 fake employees"_ — *synthetic* rows
 
 *Dashboards*
-• _"create a dashboard with hackathon_signups"_ — Gemma picks the chart and publishes a *real Tableau workbook*; the chart posts back into the channel.
+• _"create a dashboard with hackathon_signups"_ — the AI picks the chart and publishes a *real Tableau workbook*; the chart posts back into the channel.
 
 *Voice*
 • Record a *voice clip* (🎤 in the message box) — I transcribe it, answer with the table, and reply with a spoken clip.
@@ -96,7 +96,7 @@ async function tryContextCommand(text, userId, channel, client) {
     return true;
   }
   // NOTE: listing (SHOW CATALOGS/SCHEMAS/TABLES) and object creation (CREATE SCHEMA/CATALOG/TABLE)
-  // are NOT matched here — Gemma writes the SQL for those and it runs through the safety guard.
+  // are NOT matched here — OpenAI writes the SQL for those and it runs through the safety guard.
   // Only true app-state commands stay hard-coded, because they aren't SQL: our Databricks calls
   // are stateless (catalog/schema are passed per statement), so "use X" must be tracked in-app.
   if ((m = t.match(new RegExp(`\\b(?:use|switch to|go to|change to|open)\\b.*\\bcatalog\\s+${NAME}`, 'i')))) {
@@ -214,7 +214,7 @@ async function handleQuestion(text, userId, channel, client) {
 
   const out = await runPlanned(plan, ctx);
 
-  // Gemma now writes the DDL, so follow it: after creating a schema/catalog, work inside it.
+  // The model now writes the DDL, so follow it: after creating a schema/catalog, work inside it.
   const madeSchema = plan.sql.match(/\bcreate\s+schema\s+(?:if\s+not\s+exists\s+)?`?([A-Za-z0-9_]+)`?/i);
   const madeCatalog = plan.sql.match(/\bcreate\s+catalog\s+(?:if\s+not\s+exists\s+)?`?([A-Za-z0-9_]+)`?/i);
   if (madeCatalog) { ctx.catalog = madeCatalog[1]; ctx.schema = 'default'; }
@@ -418,14 +418,14 @@ app.event('file_shared', async ({ event, client, logger, context }) => {
       csvText = await dl.text();
       if (csvText.trimStart().startsWith('<')) throw new Error('Slack returned HTML, not the file — check files:read scope');
     } else {
-      // Scanned PDF: rasterize + Gemma vision. Slow (~15s/page), so tell the user first.
+      // Scanned PDF: rasterize + OpenAI vision. Slow (~15s/page), so tell the user first.
       const buf = Buffer.from(await dl.arrayBuffer());
       if (buf.subarray(0, 4).toString() !== '%PDF') throw new Error('That did not download as a PDF — check files:read scope');
-      await post(client, event.channel_id, `:mag: Reading *${name}* with Gemma vision on the AMD GPU… (~15s per page)`);
+      await post(client, event.channel_id, `:mag: Reading *${name}* with OpenAI vision… (~15s per page)`);
       const r = await extractPdf(buf, {
         onProgress: async (p, n) => { if (n > 1) await post(client, event.channel_id, `   page ${p}/${n}…`); },
       });
-      if (r.rows.length === 0) throw new Error('Gemma found no table in that scan.');
+      if (r.rows.length === 0) throw new Error('No table found in that scan.');
       csvText = r.csv;
       if (r.warnings.length) await post(client, event.channel_id, `:warning: ${r.warnings.join('; ')}`);
     }
@@ -504,7 +504,7 @@ async function doLoad(userId, channel, client, base, medallion, mode = 'replace'
 /**
  * "create a dashboard with hackathon_signups" → a real, published Tableau workbook.
  *
- * Gemma reads the table's schema and chooses the chart type, dimension and measure; viz-builder
+ * OpenAI reads the table's schema and chooses the chart type, dimension and measure; viz-builder
  * generates the .twb, embeds a CSV snapshot of the table, publishes to Tableau, and renders a PNG.
  * We post the PNG in-channel with a link to the live workbook.
  */
@@ -518,7 +518,7 @@ async function handleDashboard(text, userId, channel, client) {
     const { buildAndDeploy, loadEnv } = await import('../viz-builder/deploy.js');
     const env = loadEnv();
 
-    // Chart whatever table the user named; if they named none, let Gemma pick from all of them.
+    // Chart whatever table the user named; if they named none, let the model pick from all of them.
     const all = await vizTables(ctx.catalog, ctx.schema);
     const named = all.filter(t => new RegExp(`\\b${t}\\b`, 'i').test(text));
     const candidates = named.length ? named : all;

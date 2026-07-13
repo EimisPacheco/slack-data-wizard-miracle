@@ -107,7 +107,7 @@ canvas.addEventListener('touchstart',start); canvas.addEventListener('touchmove'
 document.getElementById('extract').onclick = async () => {
   const out = document.getElementById('out');
   if (dashMode) {
-    out.innerHTML = '<span class="muted">🧠 Reading your sketch with Gemma, then publishing to Tableau… (~40s)</span>';
+    out.innerHTML = '<span class="muted">🧠 Reading your sketch with OpenAI vision, then publishing to Tableau… (~40s)</span>';
     try {
       const res = await fetch('/dashboard', {
         method:'POST', headers:{'Content-Type':'application/json'},
@@ -127,7 +127,7 @@ document.getElementById('extract').onclick = async () => {
     } catch (e) { out.innerHTML = '<span class="err">'+e.message+'</span>'; }
     return;
   }
-  out.innerHTML = '<span class="muted">🧠 Reading your drawing with Gemma on the AMD GPU… (~15s)</span>';
+  out.innerHTML = '<span class="muted">🧠 Reading your drawing with OpenAI vision… (~15s)</span>';
   try {
     const res = await fetch('/extract', {
       method:'POST', headers:{'Content-Type':'application/json'},

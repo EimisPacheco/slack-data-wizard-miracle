@@ -1,6 +1,6 @@
 /**
  * Whiteboard → Databricks table.
- * Serves a drawing page; on "Extract", the canvas PNG goes to Gemma vision (AMD GPU),
+ * Serves a drawing page; on "Extract", the canvas PNG goes to OpenAI vision,
  * the extracted table lands in Databricks. Reuses the exact modules Data Wizard uses.
  */
 import fs from 'node:fs';
@@ -14,7 +14,7 @@ for (const line of fs.readFileSync(path.join(ROOT, '.env'), 'utf8').split('\n'))
   if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
 }
 
-const { extractTable } = await import(path.join(ROOT, 'pdf-extract', 'gemma.js'));
+const { extractTable, callVision } = await import(path.join(ROOT, 'pdf-extract', 'vision.js'));
 const { loadFlatTable } = await import(path.join(ROOT, 'slack-data-agent', 'medallion.js'));
 const { ensureSchema } = await import(path.join(ROOT, 'slack-data-agent', 'databricks.js'));
 const { analyseCsv } = await import(path.join(ROOT, 'csv-to-db', 'csv.js'));
@@ -36,7 +36,7 @@ app.post('/extract', async (req, res) => {
     const png = Buffer.from(image.replace(/^data:image\/png;base64,/, ''), 'base64');
 
     const r = await extractTable(png);
-    if (!r.rows.length) return res.json({ ok: false, message: 'Gemma found no table in the drawing. Try clearer rows/columns.' });
+    if (!r.rows.length) return res.json({ ok: false, message: 'No table found in the drawing. Try clearer rows/columns.' });
 
     const c = catalog || process.env.DATABRICKS_CATALOG || 'workspace';
     const s = schema || process.env.DATABRICKS_SCHEMA || 'data_wizard';
@@ -60,7 +60,7 @@ app.post('/extract', async (req, res) => {
 });
 
 // ─────────────── sketch → Tableau dashboard ───────────────
-// Gemma vision describes the drawing in words; that description flows through the exact
+// OpenAI vision describes the drawing in words; that description flows through the exact
 // same pipeline a typed "create a dashboard…" request uses (describeToSpec → buildAndDeploy),
 // so schema validation and Tableau publishing are shared, not reimplemented.
 
@@ -80,40 +80,7 @@ or the closest available), and fields — e.g.:
 No JSON. No markdown. One sentence only.`;
 
 async function describeSketch(png, tables) {
-  const b64 = png.toString('base64');
-  const base = (process.env.GEMMA_BASE_URL || '').replace(/\/$/, '');
-  if (base) {
-    try {
-      const r = await fetch(`${base}/api/chat`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: process.env.GEMMA_MODEL || 'gemma4:31b',
-          messages: [{ role: 'user', content: SKETCH_PROMPT(tables), images: [b64] }],
-          stream: false, options: { temperature: 0 },
-        }),
-      });
-      if (!r.ok) throw new Error(`Ollama HTTP ${r.status}`);
-      const text = (await r.json()).message?.content?.trim();
-      if (text) return text;
-      throw new Error('empty vision reply');
-    } catch (err) {
-      if (!process.env.FIREWORKS_API_KEY) throw new Error(`Gemma droplet unavailable (${err.message})`);
-    }
-  }
-  const r = await fetch('https://api.fireworks.ai/inference/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${process.env.FIREWORKS_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: process.env.FIREWORKS_GEMMA_MODEL || 'accounts/fireworks/models/gemma-3-27b-it',
-      temperature: 0,
-      messages: [{ role: 'user', content: [
-        { type: 'text', text: SKETCH_PROMPT(tables) },
-        { type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } },
-      ] }],
-    }),
-  });
-  if (!r.ok) throw new Error(`Fireworks HTTP ${r.status}: ${(await r.text()).slice(0, 150)}`);
-  const text = (await r.json()).choices?.[0]?.message?.content?.trim();
+  const text = (await callVision(SKETCH_PROMPT(tables), png)).trim();
   if (!text) throw new Error('empty vision reply');
   return text;
 }

@@ -4,11 +4,6 @@ import { classify, requiresConfirmation, KIND } from './guard.js';
 const OPENAI_API_URL = 'https://api.openai.com/v1/responses';
 const MODEL = process.env.OPENAI_MODEL || 'gpt-5.6-terra';
 
-// Which model writes the SQL. Set NL2SQL_PROVIDER=openai in .env to switch back.
-const PROVIDER = (process.env.NL2SQL_PROVIDER || 'gemma').toLowerCase();
-const GEMMA_BASE_URL = () => (process.env.GEMMA_BASE_URL || '').replace(/\/$/, '');
-const GEMMA_MODEL = () => process.env.GEMMA_MODEL || 'gemma4:31b';
-
 const SYSTEM = `You translate natural language into a single Databricks SQL statement.
 You handle BOTH questions about data AND instructions to create or inspect objects.
 
@@ -45,28 +40,6 @@ async function callOpenAI(system, user) {
   return block.text;
 }
 
-/** Gemma via Ollama on the AMD GPU. format:'json' forces valid JSON; think:false keeps it fast. */
-async function callGemma(system, user) {
-  if (!GEMMA_BASE_URL()) throw new Error('GEMMA_BASE_URL not set');
-  const res = await fetch(`${GEMMA_BASE_URL()}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: GEMMA_MODEL(),
-      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      stream: false,
-      think: false,
-      format: 'json',
-      options: { temperature: 0 },
-    }),
-  });
-  if (!res.ok) throw new Error(`Gemma ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const j = await res.json();
-  const text = j.message?.content;
-  if (!text) throw new Error('No text in Gemma response');
-  return text;
-}
-
 /**
  * Detects degenerate model output — SQL that is syntactically plausible but obviously broken.
  * Any LLM occasionally emits this; running it silently returns a wrong answer (e.g. an
@@ -90,7 +63,7 @@ export function looksDegenerate(sql) {
 
 /** One generation attempt: model → parsed { sql, explanation }. */
 async function generate(user) {
-  const raw = PROVIDER === 'openai' ? await callOpenAI(SYSTEM, user) : await callGemma(SYSTEM, user);
+  const raw = await callOpenAI(SYSTEM, user);
   let text = raw.replace(/```(json|sql)?/g, '').trim();
   const a = text.indexOf('{'), b = text.lastIndexOf('}');
   if (a !== -1 && b > a) text = text.slice(a, b + 1);

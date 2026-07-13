@@ -32,27 +32,12 @@ try {
 } catch (e) { bad(`databricks: ${e.message}`); }
 
 console.log('\nSQL generation (queries & questions):');
-{
-  const p = (process.env.NL2SQL_PROVIDER || 'gemma').toLowerCase();
-  if (p === 'openai') ok(`provider: OpenAI (${process.env.OPENAI_MODEL || 'gpt-5.6-terra'})`);
-  else ok(`provider: Gemma (${process.env.GEMMA_MODEL || 'gemma4:31b'}) on the AMD GPU  ·  set NL2SQL_PROVIDER=openai to switch back`);
-}
+ok(`provider: OpenAI (${process.env.OPENAI_MODEL || 'gpt-5.6-terra'})`);
 
-console.log('\ngemma vision (scanned-PDF extraction):');
-try {
-  const base = (process.env.GEMMA_BASE_URL || '').replace(/\/$/, '');
-  if (!base && !process.env.FIREWORKS_API_KEY) {
-    console.log('  ⚠️  no GEMMA_BASE_URL or FIREWORKS_API_KEY — PDF upload disabled (CSV still works)');
-  } else if (base) {
-    const r = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(8000) }).then(x => x.json()).catch(() => null);
-    const model = process.env.GEMMA_MODEL || 'gemma4:31b';
-    const has = r?.models?.some(m => m.name === model);
-    has ? ok(`droplet reachable — ${model} loaded`)
-        : console.log(`  ⚠️  droplet ${base} not reachable or ${model} missing${process.env.FIREWORKS_API_KEY ? ' (Fireworks fallback set)' : ''}`);
-  } else {
-    ok('Fireworks fallback configured');
-  }
-} catch (e) { console.log(`  ⚠️  gemma check: ${e.message}`); }
+console.log('\nvision (scanned-PDF & whiteboard extraction):');
+process.env.OPENAI_API_KEY
+  ? ok(`OpenAI vision (${process.env.OPENAI_MODEL || 'gpt-5.6-terra'})`)
+  : console.log('  ⚠️  OPENAI_API_KEY not set — PDF/whiteboard extraction disabled (CSV still works)');
 
 console.log('\nopenai:');
 try {
