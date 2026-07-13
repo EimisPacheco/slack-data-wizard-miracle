@@ -74,7 +74,7 @@ const SKETCH_PROMPT = (tables, hint) =>
 Available tables: ${tables.join(', ')}.${hint ? `
 The user also typed this hint — treat it as authoritative, especially for which table to use: "${hint}".` : ''}
 Read the drawing: the chart shape (vertical bars, horizontal bars, a line, scattered dots, a circle
-with slices = share per category) and any handwritten words (title, axis labels, category names, a
+with slices = a pie chart) and any handwritten words (title, axis labels, category names, a
 table name).
 Reply with ONE short sentence describing the chart to build — chart type, table (the hint's table if
 given, else the written one, else the closest available), and fields — e.g.:

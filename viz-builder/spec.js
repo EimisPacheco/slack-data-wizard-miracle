@@ -12,7 +12,7 @@ const SYSTEM = `You turn a request for a chart into a Tableau visualization spec
 Reply with JSON only:
 {
   "table": "<one of the given tables>",
-  "chartType": "bar|hbar|line|scatter|table",
+  "chartType": "bar|hbar|line|area|scatter|pie|table",
   "dimension": "<categorical or date column to group by>",
   "measure": "<numeric column to aggregate; for a count use any id-like column>",
   "aggregation": "SUM|AVG|COUNT|COUNTD",
@@ -25,9 +25,8 @@ Reply with JSON only:
 RULES:
 - Use ONLY tables and columns from the schema provided. Never invent names.
 - For geographic data (countries, regions), use bar or hbar grouped by that column — never a map.
-- A pie or donut request means "share per category": build a bar (or hbar) of that same grouping
-  instead — never refuse because pies aren't offered.
-- line requires a date/timestamp dimension.
+- pie suits share-per-category with FEW categories (≤8); with more, prefer hbar.
+- line and area require a date/timestamp dimension.
 - hbar suits many categories or long labels; bar suits few.
 - For "how many X", use aggregation COUNT.
 - Omit fields that don't apply.
@@ -88,8 +87,8 @@ export async function describeToSpec(catalog, schema, tables, description) {
     if (spec.geoField && !spec.dimension) spec.dimension = spec.geoField;
     delete spec.geoField;
   }
-  // A pie is "share per category" — the bar of the same grouping. Belt-and-braces with the prompt.
-  if (spec.chartType === 'pie' || spec.chartType === 'donut') spec.chartType = 'bar';
+  // donut is a pie with a hole nobody needs — same chart.
+  if (spec.chartType === 'donut') spec.chartType = 'pie';
 
   // The model still occasionally invents a column — validate against the real schema.
   const cols = new Set((s[spec.table] || []).map(c => c.name.toLowerCase()));

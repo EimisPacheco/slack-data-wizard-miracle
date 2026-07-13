@@ -128,6 +128,20 @@ export function generateTwb({ spec, columns }) {
       use(spec.dimension, dimKind); use(spec.measure, aggKind);
       cols = dimInst; rows = measureInst;
       break;
+    case 'area':
+      mark = 'Area';
+      use(spec.dimension, dimKind); use(spec.measure, aggKind);
+      cols = dimInst; rows = measureInst;
+      break;
+    case 'pie':
+      // A pie lives entirely on the marks card: nothing on rows/cols, the category on
+      // color and the measure on the wedge size/angle.
+      mark = 'Pie';
+      use(spec.dimension, 'none'); use(spec.measure, aggKind);
+      rows = ''; cols = '';
+      encodings += `\n              <color column='${dimInst}' />`;
+      encodings += `\n              <size column='${measureInst}' />`;
+      break;
     case 'scatter': {
       mark = 'Circle';
       const m2Inst = ref(instanceName(spec.measure2 || spec.measure, aggKind));
@@ -154,7 +168,8 @@ export function generateTwb({ spec, columns }) {
       encodings += `\n              <text column='${measureInst}' />`;
       break;
   }
-  if (spec.colorField && spec.chartType !== 'map') { use(spec.colorField, 'none'); encodings += `\n              <color column='${ref(instanceName(spec.colorField, 'none'))}' />`; }
+  // pie already put its dimension on color — a second color encoding would clash.
+  if (spec.colorField && spec.chartType !== 'map' && spec.chartType !== 'pie') { use(spec.colorField, 'none'); encodings += `\n              <color column='${ref(instanceName(spec.colorField, 'none'))}' />`; }
 
   // ---- build column defs + instances + dependency block from `used` ----
   const colDefs = [];
