@@ -113,6 +113,7 @@ async function researchVizQL(question) {
 /** Unknown VizQL vocabulary in the spec, or null if the serializer can express all of it. */
 function unknownVizql(v) {
   if (!v) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) return 'malformed vizql block';
   const problems = [];
   if (v.mark && !KNOWN_MARKS.has(v.mark)) problems.push(`mark "${v.mark}"`);
   for (const it of [...(v.rows || []), ...(v.cols || []), ...(v.encodings || [])]) {

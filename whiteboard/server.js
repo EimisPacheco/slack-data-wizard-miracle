@@ -104,6 +104,7 @@ app.post('/dashboard', async (req, res) => {
     if (!specRes.ok) return res.json({ ok: false, message: specRes.reason, described });
     const spec = specRes.spec;
     spec.sheetName = spec.title || 'Viz';
+    spec.chartType = spec.chartType || 'viz';   // vizql-only specs may omit it; used in filenames
 
     const env = loadEnv();
     const r = await buildAndDeploy(spec, {

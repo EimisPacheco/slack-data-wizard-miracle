@@ -118,7 +118,7 @@ export function generateTwb({ spec, columns }) {
   const dimInst = spec.dimension ? ref(instanceName(spec.dimension, dimKind)) : null;
 
   // ---- native VizQL: the model placed fields on shelves itself ----
-  if (spec.vizql) {
+  if (spec.vizql && typeof spec.vizql === 'object' && !Array.isArray(spec.vizql)) {
     const v = spec.vizql;
     mark = KNOWN_MARKS.has(v.mark) ? v.mark : 'Automatic';
     const shelfRef = it => {

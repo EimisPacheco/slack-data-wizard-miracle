@@ -43,7 +43,9 @@ async function tableToCsv(env, table, columns, catalog, schema) {
   const c = catalog || env.DATABRICKS_CATALOG || 'dbdemos';
   const s = schema || env.DATABRICKS_SCHEMA || 'data_wizard';
   const names = columns.map(x => x.name);
-  const r = await dbx.runSql(`SELECT ${names.map(n => `\`${n}\``).join(', ')} FROM \`${c}\`.\`${s}\`.\`${table}\``);
+  // Cap the snapshot — an unbounded SELECT on a big table would balloon the .twbx and the
+  // statement API response. 100k rows is far beyond anything a chart can show anyway.
+  const r = await dbx.runSql(`SELECT ${names.map(n => `\`${n}\``).join(', ')} FROM \`${c}\`.\`${s}\`.\`${table}\` LIMIT 100000`);
   const esc = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
   return [names.join(','), ...r.rows.map(row => row.map(esc).join(','))].join('\n') + '\n';
 }
@@ -101,6 +103,7 @@ export async function buildAndDeploy(spec, { workbookName, outDir, catalog, sche
   const wbName = workbookName || `Viz ${spec.table} ${spec.chartType}`;
   const { workbookId, views } = publish(env, twbx, wbName);
   const view = views[0];
+  if (!view) throw new Error(`workbook ${workbookId} published but reported no views — cannot render`);
   const png = path.join(dir, `${spec.table}_${spec.chartType}.png`);
   const rendered = await renderView(env, view.id, png);
 

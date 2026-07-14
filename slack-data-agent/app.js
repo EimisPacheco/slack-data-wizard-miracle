@@ -34,6 +34,7 @@ const app = new App({ token: process.env.SLACK_BOT_TOKEN, appToken: process.env.
 const context = new Map();     // userId -> { catalog, schema }
 const pendingUpload = new Map();// userId -> { csvText, filename, columns, dataRows }
 const pendingSql = new Map();   // actionId -> { plan, context }
+let sqlSeq = 0;                 // monotonic suffix for confirmation ids — never reused
 
 function ctxOf(userId) {
   if (!context.has(userId)) context.set(userId, { catalog: DEFAULT_CATALOG, schema: DEFAULT_SCHEMA });
@@ -67,7 +68,12 @@ const HELP_TEXT =
 • _"generate 20 fake employees"_ — *synthetic* rows
 
 *Dashboards*
-• _"create a dashboard with hackathon_signups"_ — the AI picks the chart and publishes a *real Tableau workbook*; the chart posts back into the channel.
+• _"create a dashboard with hackathon_signups"_ — the AI picks the chart (bar, line, area, pie, even a treemap) and publishes a *real Tableau workbook*; the chart posts back into the channel.
+• Name no table and I'll ask you to pick one first.
+
+*Draw it*
+• _"draw a dashboard"_ — sketch the chart on a whiteboard; I read the drawing and publish it.
+• _"draw a table"_ — sketch rows and columns; they land in your lakehouse as a real table.
 
 *Voice*
 • Record a *voice clip* (🎤 in the message box) — I transcribe it, answer with the table, and reply with a spoken clip.
@@ -207,7 +213,9 @@ async function handleQuestion(text, userId, channel, client) {
   if (!plan.ok) { await post(client, channel, `:no_entry: ${plan.reason}`); return { spoken: `I couldn't answer that. ${plan.reason}` }; }
 
   if (plan.needsConfirmation) {
-    const id = `sql_${userId}_${Object.keys(Object.fromEntries(pendingSql)).length}`;
+    // Monotonic id — deriving it from the map SIZE reused ids after a confirm/cancel deleted
+    // an entry, which could silently swap someone's pending destructive SQL for another.
+    const id = `sql_${userId}_${++sqlSeq}`;
     pendingSql.set(id, { plan, context: { ...ctx } });
     const opts = {
       emoji: '⚠️', title: 'This will change your data',
@@ -361,7 +369,9 @@ async function transcribeClip(file, client) {
   // Slack transcribes clips itself (free) but takes a few seconds — poll briefly.
   for (let i = 0; i < 8; i++) {
     const t = file.transcription;
-    if (t?.status === 'complete' && t.preview?.content) return t.preview.content.replace(/\.{3}$/, '').trim();
+    // Slack only exposes a PREVIEW of its transcript; has_more means it's truncated and
+    // answering it would answer half the question — get the full text from ElevenLabs instead.
+    if (t?.status === 'complete' && t.preview?.content && !t.preview.has_more) return t.preview.content.replace(/\.{3}$/, '').trim();
     if (t?.status && t.status !== 'processing') break;
     await new Promise(r => setTimeout(r, 1500));
     file = (await client.files.info({ file: file.id })).file;
@@ -597,9 +607,12 @@ async function buildDashboard(text, candidates, userId, channel, client) {
     if (!res.ok) { await edit(`:no_entry: ${res.reason}`); return; }
     const spec = res.spec;
     spec.sheetName = spec.title || 'Viz';
+    spec.chartType = spec.chartType || 'viz';   // vizql-only specs may omit it; used in filenames
 
-    await edit(`:bar_chart: Building a *${spec.chartType}* of \`${spec.measure || 'count'}\` by ` +
-               `\`${spec.dimension || spec.geoField}\` from \`${spec.table}\` — publishing to Tableau…`);
+    await edit(spec.vizql
+      ? `:bar_chart: Building a custom *${spec.vizql.mark || 'visualization'}* from \`${spec.table}\` — publishing to Tableau…`
+      : `:bar_chart: Building a *${spec.chartType}* of \`${spec.measure || 'count'}\` by ` +
+        `\`${spec.dimension || spec.geoField}\` from \`${spec.table}\` — publishing to Tableau…`);
 
     const r = await buildAndDeploy(spec, {
       workbookName: (spec.title || `${spec.table} ${spec.chartType}`).slice(0, 60),
