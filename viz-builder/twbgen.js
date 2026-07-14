@@ -168,7 +168,9 @@ export function generateTwb({ spec, columns }) {
       rows = ''; cols = '';
       encodings += `\n              <color column='${dimInst}' />`;
       encodings += `\n              <size column='${measureInst}' />`;
-      encodings += `\n              <text column='${dimInst}' />`;
+      // ONLY the % on the wedge — the legend already maps colour→category, so also labelling each
+      // wedge with the long category name made the names collide around small slices and squeezed
+      // the whole pie. Identity comes from the legend; the number comes from the wedge.
       encodings += `\n              <text column='${ref('[usr:Calculation_PctOfTotal:nk]')}' />`;
       break;
     case 'scatter': {
@@ -245,7 +247,7 @@ export function generateTwb({ spec, columns }) {
           </style-rule>
         </style>` : '';
   const legendCard = colorParam
-    ? `<edge name='right'><strip size='160'><card pane-specification-id='0' param='${colorParam}' type='color' /></strip></edge>`
+    ? `<edge name='right'><strip size='130'><card pane-specification-id='0' param='${colorParam}' type='color' /></strip></edge>`
     : '';
 
   const title = spec.title || `${spec.aggregation || ''} ${spec.measure || ''} by ${spec.dimension || ''}`.trim();
