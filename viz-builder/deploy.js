@@ -70,19 +70,42 @@ async function tableToCsv(env, table, columns, catalog, schema) {
  * (AVG / COUNTD / MIN / MAX) can't be accumulated, so those stay per-period.
  * Returns { csv, columns, spec } to feed the workbook generator.
  */
-async function timeSeriesSnapshot(env, spec, columns, catalog, schema) {
+const VALID_AGG = new Set(['COUNT', 'SUM', 'AVG', 'COUNTD', 'MIN', 'MAX']);
+
+/** The date/timestamp field a chart groups by — from spec.dimension, else a date field in vizql. */
+export function dateDimension(spec, columns) {
+  const isDate = name => { const c = columns.find(x => x.name === name); return c && /date|timestamp/i.test(c.type); };
+  if (spec.dimension && isDate(spec.dimension)) return spec.dimension;
+  const fields = [...(spec.vizql?.cols || []), ...(spec.vizql?.rows || []), ...(spec.vizql?.encodings || [])]
+    .map(p => p && p.field).filter(Boolean);
+  return fields.find(isDate) || null;
+}
+
+async function timeSeriesSnapshot(env, spec, columns, catalog, schema, dateDim) {
   const c = catalog || env.DATABRICKS_CATALOG || 'dbdemos';
   const s = schema || env.DATABRICKS_SCHEMA || 'data_wizard';
-  const gran = { day: 'DAY', month: 'MONTH', year: 'YEAR' }[(spec.dateGranularity || 'day').toLowerCase()] || 'DAY';
+  const granKey = ['day', 'month', 'year'].includes((spec.dateGranularity || '').toLowerCase())
+    ? spec.dateGranularity.toLowerCase() : 'day';
+  const gran = { day: 'DAY', month: 'MONTH', year: 'YEAR' }[granKey];
   const agg = (spec.aggregation || 'COUNT').toUpperCase();
+  if (!VALID_AGG.has(agg)) throw new Error(`Unsupported aggregation "${agg}" for a time chart.`);
   const measExpr = agg === 'COUNT' ? 'COUNT(*)'
     : agg === 'COUNTD' ? `COUNT(DISTINCT \`${spec.measure}\`)`
     : `${agg}(\`${spec.measure}\`)`;
-  const alias = spec.measure || 'value';
-  const cumulative = agg === 'COUNT' || agg === 'SUM';
-  const dq = `\`${spec.dimension}\``;
+  // The value column's name. Never undefined (COUNT specs omit measure) and never equal to the
+  // date column (both-named-the-same collapses the two columns and silently breaks the workbook).
+  let alias = spec.measure;
+  if (!alias || alias === dateDim) alias = agg === 'COUNT' ? 'signups' : 'value';
+  const dq = `\`${dateDim}\``;
 
-  // Per-period totals, then (for additive measures) a running SUM over the ordered periods.
+  const mark = spec.vizql?.mark;
+  const chartType = ['bar', 'hbar', 'line', 'area'].includes(spec.chartType) ? spec.chartType
+    : mark === 'Bar' ? 'bar' : mark === 'Area' ? 'area' : 'line';
+  const isLineArea = chartType === 'line' || chartType === 'area';
+  // Accumulate ONLY a line/area of an additive measure — that's the growth story. Bars, and any
+  // non-additive aggregation (AVG/COUNTD/MIN/MAX), stay per-period.
+  const cumulative = isLineArea && (agg === 'COUNT' || agg === 'SUM');
+
   const perPeriod =
     `SELECT DATE_TRUNC('${gran}', ${dq}) AS period, ${measExpr} AS v ` +
     `FROM \`${c}\`.\`${s}\`.\`${spec.table}\` WHERE ${dq} IS NOT NULL GROUP BY 1`;
@@ -92,21 +115,21 @@ async function timeSeriesSnapshot(env, spec, columns, catalog, schema) {
     : `SELECT period AS ${dq}, v AS \`${alias}\` FROM (${perPeriod}) ORDER BY period LIMIT 100000`;
 
   const r = await dbx.runSql(query);
-  const csv = rowsToCsv([spec.dimension, alias], r.rows);
+  if (!r.rows.length) throw new Error(`No dated rows in \`${spec.table}\` to chart "${dateDim}" over time.`);
+  const csv = rowsToCsv([dateDim, alias], r.rows);
 
-  // Force the plain line/area path (chartType, not vizql): the model's vizql block re-applies
-  // COUNT per row, which on one-row-per-day data is 1 again. Stripping it uses SUM over the
-  // pre-aggregated value = the real running total.
-  const chartType = ['line', 'area'].includes(spec.chartType) ? spec.chartType
-    : (spec.vizql?.mark === 'Area' ? 'area' : 'line');
-  // Say so in the title when we accumulated, so nobody reads a running total as a daily count.
+  // Force the plain chartType path (not vizql): the model's vizql block re-applies COUNT per row,
+  // which on one-row-per-period data is 1 again. Stripping it uses SUM over the pre-aggregated value.
   const title = cumulative && spec.title && !/cumulative|running|total|to date/i.test(spec.title)
     ? `Cumulative ${spec.title}` : spec.title;
 
   return {
     csv,
-    columns: [{ name: spec.dimension, type: 'timestamp' }, { name: alias, type: 'double' }],
-    spec: { ...spec, chartType, aggregation: 'SUM', vizql: undefined, title, sheetName: title || spec.sheetName },
+    columns: [{ name: dateDim, type: 'timestamp' }, { name: alias, type: 'double' }],
+    // measure:alias so twbgen finds the value column; dateGranularity set so it truncates
+    // consistently (an unset granularity made area charts collapse every row into one year).
+    spec: { ...spec, dimension: dateDim, measure: alias, chartType, aggregation: 'SUM',
+      dateGranularity: granKey, vizql: undefined, title, sheetName: title || spec.sheetName },
     rows: r.rows.length,
   };
 }
@@ -170,17 +193,16 @@ export async function buildAndDeploy(spec, opts = {}) {
   const dir = fs.mkdtempSync(path.join(outDir || os.tmpdir(), 'viz-'));
   fs.mkdirSync(path.join(dir, 'Data'), { recursive: true });
 
-  // A line/area "over time" needs the date grouped. Tableau's embedded-CSV truncation can't be
-  // trusted (it produced a flat line of 1s), so pre-aggregate in SQL for those. Everything else
-  // gets the raw snapshot and lets Tableau aggregate.
-  // The model expresses a line as chartType:'line' AND a vizql block (mark:Line) — so DON'T exclude
-  // vizql here, or the pre-aggregation is skipped and the bug returns. Detect either shape.
-  const dimCol = columns.find(x => x.name === spec.dimension);
-  const isLineArea = ['line', 'area'].includes(spec.chartType) || ['Line', 'Area'].includes(spec.vizql?.mark);
-  const isTimeSeries = isLineArea && dimCol && /date|timestamp/i.test(dimCol.type);
+  // ANY chart over a date/timestamp dimension needs the date grouped in SQL — Tableau's embedded-CSV
+  // truncation can't be trusted (it plotted every raw timestamp separately: a flat line, or one thin
+  // bar per timestamp). Covers bar/hbar/line/area, and whether the model set chartType or a vizql
+  // block, and whether the date is in spec.dimension or only inside vizql.
+  const dateDim = dateDimension(spec, columns);
+  const isDateChart = !!dateDim && (['bar', 'hbar', 'line', 'area'].includes(spec.chartType)
+    || ['Bar', 'Line', 'Area'].includes(spec.vizql?.mark));
   let csv = '', genSpec = spec, genCols = columns;
-  if (isTimeSeries) {
-    const ts = await timeSeriesSnapshot(env, spec, columns, catalog, schema);
+  if (isDateChart) {
+    const ts = await timeSeriesSnapshot(env, spec, columns, catalog, schema, dateDim);
     csv = ts.csv; genSpec = ts.spec; genCols = ts.columns;
   } else {
     csv = await tableToCsv(env, spec.table, columns, catalog, schema);
@@ -203,7 +225,9 @@ export async function buildAndDeploy(spec, opts = {}) {
 
   // The model LOOKS at what it just built. If the render is unreadable and a different chart type
   // would clearly be clearer (e.g. a 10-slice pie → horizontal bar), rebuild ONCE with that type.
-  if (critique && !_retried) {
+  // NOT for date charts: a cumulative "over time" line is the intended, correct view — letting the
+  // critic switch it to a bar both loses the meaning AND rebuilt as a raw-timestamp mess.
+  if (critique && !isDateChart && !_retried) {
     const { critiqueChart } = await import('./spec.js');
     const verdict = await critiqueChart(fs.readFileSync(rendered.path), spec, description).catch(() => ({ good: true }));
     if (!verdict.good && verdict.betterChartType && verdict.betterChartType !== spec.chartType) {
