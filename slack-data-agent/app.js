@@ -113,14 +113,14 @@ const HELP_TEXT =
 
 const ROUTER_SYSTEM = `You are the intent router for Data Wizard, a Slack data assistant.
 Classify the user's message. Reply with JSON only:
-{"intent":"<one from the list>","name":"<identifier>","description":"<text>","source":"real|synthetic|ask"}
+{"intent":"<one from the list>","name":"<identifier>","description":"<text>","source":"real|synthetic|ask","medallion":true|false}
 
 Intents:
 - "help"           — asks what the assistant can do, its commands or capabilities.
 - "context"        — asks where they are working / their current catalog or schema, in any phrasing ("where am I", "where I am?", "context", "whoami").
 - "use_catalog"    — wants to switch to / work in a catalog. Put the bare catalog name in "name".
 - "use_schema"     — wants to switch to / work in a schema or database. Put the bare schema name in "name".
-- "generate_data"  — wants NEW data created or fetched: a table of real-world facts, or fake/synthetic/sample/test rows. Put what they want in "description". Set "source" to "real" for true web-sourced figures, "synthetic" for fake/test rows, "ask" if unclear.
+- "generate_data"  — wants NEW data created or fetched: a table of real-world facts, or fake/synthetic/sample/test rows. Put what they want in "description". Set "source" to "real" for true web-sourced figures, "synthetic" for fake/test rows, "ask" if unclear. Set "medallion" true if they want a medallion / bronze-silver-gold / lakehouse pipeline built (not just a flat table). Put a table name in "name" ONLY if they explicitly gave one.
 - "dashboard"      — wants a chart/dashboard/visualization built from existing tables, described in words.
 - "draw_dashboard" — wants to DRAW or SKETCH the dashboard/chart themselves (whiteboard, drawing).
 - "draw_table"     — wants to DRAW a table by hand on the whiteboard.
@@ -195,6 +195,14 @@ async function handleWhiteboardLink(mode, channel, client) {
 async function handleQuestion(text, userId, channel, client) {
   const ctx = ctxOf(userId);
 
+  // Mid-conversation data-gen (spoken or typed): the user is answering our question about the
+  // source or table name, not starting something new — that takes precedence over routing.
+  if (genConvo.has(userId)) {
+    const handled = await continueGenConvo(userId, text, channel, client);
+    if (handled) return handled;   // asked the next question, or built the pipeline
+    // null → they changed the subject; genConvo was cleared, fall through to normal routing.
+  }
+
   // One model call decides what the user wants. If the router itself fails, fall through
   // to the query path — which is also the model.
   let route;
@@ -226,8 +234,7 @@ async function handleQuestion(text, userId, channel, client) {
     }
 
     case 'generate_data':
-      await handleDataGen(route.description?.trim() || text, route.source, userId, channel, client);
-      return { spoken: 'Working on your table — a preview will post here shortly.' };
+      return startGen(route, text, userId, channel, client);
 
     case 'draw_dashboard': return handleWhiteboardLink('dashboard', channel, client);
     case 'draw_table': return handleWhiteboardLink('table', channel, client);
@@ -488,6 +495,117 @@ async function genFrom(which, body, client) {
 }
 app.action('gen_real', async ({ ack, body, client }) => { await ack(); await genFrom('real', body, client); });
 app.action('gen_synthetic', async ({ ack, body, client }) => { await ack(); await genFrom('synthetic', body, client); });
+
+// ── conversational data-gen → medallion (works from a voice note) ──
+// The button flow above can't be driven by voice. When the user asks for a medallion/pipeline, we
+// hold a short conversation instead: ASK (aloud + in-channel) for anything missing — real vs
+// synthetic, and the table name — then generate the data AND build the bronze/silver/gold pipeline
+// ourselves. State lives per user until the pipeline is built or they change the subject.
+const genConvo = new Map(); // userId -> { description, source|null, tableName|null, medallion, channel }
+
+async function startGen(route, text, userId, channel, client) {
+  const description = (route.description || text || '').trim();
+  const source = route.source === 'real' || route.source === 'synthetic' ? route.source : null;
+  const tableName = cleanIdent(route.name) || null;
+  // Plain flat-table generation keeps the existing preview/buttons UX untouched.
+  if (!route.medallion) {
+    await handleDataGen(description, route.source, userId, channel, client);
+    return { spoken: 'Working on your data — a preview will post here shortly.' };
+  }
+  genConvo.set(userId, { description, source, tableName, medallion: true, channel });
+  return advanceGen(userId, channel, client);
+}
+
+// Ask (aloud + in the channel) for the next missing piece, or build once we have everything.
+async function advanceGen(userId, channel, client) {
+  const g = genConvo.get(userId);
+  if (!g.source) {
+    const q = 'Should I pull real data from the web with Perplexity, or generate synthetic data?';
+    await post(client, channel, `:sparkles: ${q}`);
+    return { spoken: q };
+  }
+  if (!g.tableName) {
+    const q = 'What should I name the table?';
+    await post(client, channel, `:sparkles: ${q}`);
+    return { spoken: q };
+  }
+  genConvo.delete(userId);
+  return generateAndLoad(g, userId, channel, client);
+}
+
+// The user replied to one of our questions — the MODEL reads the reply (no keyword matching):
+// pull out the table name and/or the source, or notice they changed the subject entirely.
+async function continueGenConvo(userId, text, channel, client) {
+  const g = genConvo.get(userId);
+  const had = { source: !!g.source, name: !!g.tableName };
+  const parsed = await interpretGenReply(text, { needSource: !g.source, needName: !g.tableName }).catch(() => null);
+  if (!parsed || parsed.abandoned) { genConvo.delete(userId); return null; }
+  if (!g.source && parsed.source) g.source = parsed.source;
+  if (!g.tableName && parsed.tableName) g.tableName = cleanIdent(parsed.tableName) || null;
+  // If the reply answered nothing we asked for (e.g. "actually show me the tables"), it's a new
+  // request, not an answer — drop the flow and let it route normally instead of re-asking forever.
+  const progressed = (!had.source && g.source) || (!had.name && g.tableName);
+  if (!progressed) { genConvo.delete(userId); return null; }
+  genConvo.set(userId, g);
+  return advanceGen(userId, channel, client);
+}
+
+async function interpretGenReply(text, { needSource, needName }) {
+  const asked = [needSource && 'the data source (real web data vs synthetic)', needName && 'the table name'].filter(Boolean).join(' and ');
+  const sys = `A data assistant just asked the user for ${asked}. Read their reply and answer JSON only: ` +
+    `{"source":"real|synthetic|null","tableName":"<identifier or null>","abandoned":true|false}. ` +
+    `source: "real" for web/Perplexity/actual data, "synthetic" for fake/test/AI data, null if not stated. ` +
+    `tableName: the bare table name if they gave one (e.g. "customers"), else null. ` +
+    `abandoned: true ONLY if the reply is clearly a new, unrelated request rather than an answer.`;
+  const r = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST', signal: AbortSignal.timeout(60000),
+    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: process.env.OPENAI_MODEL || 'gpt-5.6-terra',
+      input: [{ role: 'system', content: sys }, { role: 'user', content: text }] }),
+  });
+  if (!r.ok) throw new Error(`gen-reply ${r.status}`);
+  const p = await r.json();
+  const msg = (p.output || []).find(o => o.type === 'message');
+  let t = ((msg?.content || []).find(c => c.type === 'output_text')?.text || '').replace(/```(json)?/g, '').trim();
+  const a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if (a !== -1 && b > a) t = t.slice(a, b + 1);
+  const j = JSON.parse(t);
+  return {
+    source: j.source === 'real' || j.source === 'synthetic' ? j.source : null,
+    tableName: j.tableName && j.tableName !== 'null' ? j.tableName : null,
+    abandoned: !!j.abandoned,
+  };
+}
+
+// Generate the data and build the full medallion pipeline in one shot — no buttons.
+async function generateAndLoad(g, userId, channel, client) {
+  const ctx = ctxOf(userId);
+  await post(client, channel, g.source === 'real'
+    ? `:globe_with_meridians: Pulling real data with Perplexity for _"${g.description}"_, then building the *${g.tableName}* medallion pipeline…`
+    : `:game_die: Generating synthetic data for _"${g.description}"_, then building the *${g.tableName}* medallion pipeline…`);
+  try {
+    const gen = g.source === 'real' ? await fromSearch(g.description) : await synthetic(g.description);
+    await ensureSchema(ctx.catalog, ctx.schema);
+    const r = await buildPipeline({
+      catalog: ctx.catalog, schema: ctx.schema, table: g.tableName, mode: 'replace',
+      csvText: gen.csv, sourceName: `${g.tableName}.csv`, goldSpec: { aggregation: 'COUNT' },
+    });
+    const opts = {
+      emoji: '🧱', title: `Medallion pipeline: ${g.tableName}`,
+      subtitle: `${ctx.catalog}.${ctx.schema}`,
+      body: `🥉 \`${r.bronze.bronze}\` — ${r.bronze.rowsInserted} raw + lineage\n` +
+            `🥈 \`${r.silver.silver}\` — ${r.silver.rows} deduped & typed\n` +
+            `🥇 \`${r.gold.gold}\` — aggregated by \`${r.gold.dimension}\``,
+      buttons: [{ text: `Show ${g.tableName}_gold`, action_id: 'show_gold', value: r.gold.gold, style: 'primary' }],
+    };
+    await postRich(client, channel, `Pipeline built in ${ctx.catalog}.${ctx.schema}`, [card(opts)], cardClassic(opts));
+    return { spoken: `Done. I ${g.source === 'real' ? 'pulled real data from the web' : 'generated synthetic data'} and built the ${g.tableName} medallion pipeline — bronze, silver and gold, with the gold layer aggregated by ${r.gold.dimension}.` };
+  } catch (err) {
+    genConvo.delete(userId);
+    await post(client, channel, `:x: ${err.message}`);
+    return { spoken: `Sorry, building the ${g.tableName} pipeline failed. ${err.message}` };
+  }
+}
 
 app.action('cancel_sql', async ({ ack, body, client }) => {
   await ack();
