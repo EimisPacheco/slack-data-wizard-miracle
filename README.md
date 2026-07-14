@@ -43,8 +43,9 @@ Everything below happens in a Slack message. No console, no SQL, no BI licence, 
 | _"how many signups per country?"_ | **OpenAI writes the SQL**, runs it, returns a formatted table |
 | _"create a schema called sales"_ | **OpenAI writes the DDL** — creation is natural language too |
 | _"build a medallion pipeline"_ | Bronze → Silver → Gold, with lineage, dedup and a chosen aggregation |
-| _"create a dashboard with signups"_ | **OpenAI picks the chart**, and a real Tableau workbook is published |
+| _"create a dashboard with signups"_ | **Two AI agents** design and verify the chart, then a real Tableau workbook is published |
 | _"generate 20 fake vendors"_ | Synthetic rows via OpenAI — or **real, cited figures** from the web via Perplexity |
+| Click **📧 Email** on any answer | Sends the table or the **dashboard chart** to any inbox via **Resend** — results aren't trapped in Slack |
 | _"delete the inactive users"_ | Shows you the SQL and **waits for you to click** before touching anything |
 
 The person doing this does not know they are using Unity Catalog, a medallion architecture, or a
@@ -63,11 +64,28 @@ path in which a human writes the SQL. One model family drives five independent c
 | **Natural language → DDL** | `CREATE SCHEMA`, `CREATE TABLE`, `SHOW`, `DESCRIBE` — all model-authored | `slack-data-agent/nl2sql.js` |
 | **Vision: scanned document → table** | Reads a rasterised page image and extracts the table structure | `pdf-extract/vision.js` |
 | **Vision: whiteboard → table & dashboard** | Reads a hand-drawn table into schema and rows — or reads a **sketched chart** (bar shapes, handwritten labels, the table name) and turns it into a validated spec for a published Tableau workbook. Verified end-to-end on real drawings. | `whiteboard/` |
-| **Chart selection** | Chooses chart type, dimension, measure and aggregation from a sentence — the same path a sketch flows into | `viz-builder/spec.js` |
+| **Two-agent visualization** | A VizQL *expert* agent reasons over a live **data profile** to design a chart that fits the data; a *reviewer* agent then inspects the rendered image and **self-heals** it if it's wrong — before it ever reaches Slack | `viz-builder/spec.js` |
 
 Everything the model writes is validated before it acts: SQL goes through a safety classifier,
 chart specs are checked column-by-column against the live Databricks schema, and vision output is
 previewed to the user before a single row is loaded.
+
+---
+
+## Two agents design every chart
+
+A dashboard is never hand-coded chart logic — two AI agents own it:
+
+1. **The VizQL expert** reads a live **profile of the data** (each column's cardinality and how its
+   values are distributed) and *reasons* about what actually makes sense. It never plots a uniform
+   field as a flat line — it picks the dimension that varies. If you sketched a chart the data can't
+   support (a pie for forty categories), it builds the one that fits and **explains why**.
+2. **The reviewer agent** looks at the *rendered image* before it ever reaches Slack. A broken
+   render — a single dot, an unreadable pie, a meaningless straight line — is caught and
+   **regenerated automatically**. A correct chart is left alone.
+
+The chart you get is one an analyst would have chosen, checked by a second pair of eyes — with no
+analyst. Full detail in [docs/CORE-ARCHITECTURE.md](docs/CORE-ARCHITECTURE.md).
 
 ---
 
@@ -130,10 +148,11 @@ Slack (Bolt, Socket Mode, Block Kit)
   │
   ├── CSV / scanned PDF / whiteboard ──► OpenAI vision ──► typed rows
   ├── plain-English question ──────────► OpenAI NL→SQL ──► guard ──► Databricks
-  ├── "create a dashboard" ────────────► OpenAI chart spec ──► Tableau workbook
-  ├── "draw a dashboard" + a sketch ───► OpenAI vision ──► chart spec ──► Tableau ──► back into Slack
+  ├── "create a dashboard" ────────────► VizQL expert ─► reviewer self-heal ─► Tableau workbook
+  ├── "draw a dashboard" + a sketch ───► OpenAI vision ─► expert + reviewer ─► Tableau ─► back into Slack
   ├── voice note 🎤 ───────────────────► ElevenLabs Scribe STT ──► same NL→SQL ──► ElevenLabs TTS spoken reply
   ├── live voice ──────────────────────► ElevenLabs conversational agent ──► the same functions
+  ├── 📧 Email button ─────────────────► Resend ──► any inbox (results leave Slack)
   └── MCP (Claude · Cursor · ChatGPT) ─► mcp-server ──► the same functions
                                               │
                                           Databricks
@@ -142,11 +161,11 @@ Slack (Bolt, Socket Mode, Block Kit)
 
 | Module | Role |
 |---|---|
-| `slack-data-agent/` | The agent: Block Kit UI, NL→SQL, safety guard, medallion pipeline |
+| `slack-data-agent/` | The agent: Block Kit UI, NL→SQL, safety guard, medallion pipeline, email-out (Resend) |
 | `csv-to-db/` | RFC-4180 parser and type inference (incl. thousands separators) |
 | `pdf-extract/` | Rasterise a scanned PDF, extract its table with OpenAI vision |
 | `whiteboard/` | Draw a **table** by hand, get a real one — or sketch a **chart** and get a published Tableau dashboard posted back into Slack |
-| `viz-builder/` | Sentence → Tableau `.twb` → published workbook → rendered PNG |
+| `viz-builder/` | Two agents — a VizQL expert designs from a live data profile, a reviewer self-heals the render — then publish → PNG |
 | `datagen/` | Bootstrap a table from the live web (Perplexity) or synthetically (OpenAI) |
 | `voice-agent/` | ElevenLabs voice agent: ask out loud, answers + transcripts posted back to Slack |
 | `mcp-server/` | Exposes the same tools over MCP (Streamable HTTP) to Claude, Cursor and ChatGPT |
@@ -197,8 +216,11 @@ against whatever tables actually exist in your catalog. These are just examples 
 - If it's ambiguous, Data Wizard asks you: 🌐 real or 🎲 synthetic?
 
 **📊 Dashboards**
-- _"create a dashboard with hackathon_signups"_ — OpenAI picks the chart and a **real Tableau workbook is published**
-- _"draw a dashboard"_ — **sketch the chart on the whiteboard**; OpenAI vision reads the drawing (bar shapes, handwritten labels, the table name), validates it against the live schema, publishes the workbook, and **posts the chart back into the channel**
+- _"create a dashboard with hackathon_signups"_ — the VizQL **expert** agent designs the chart that fits the data, the **reviewer** agent verifies the rendered image (and self-heals it if it's off), and a **real Tableau workbook is published**
+- _"draw a dashboard"_ — **sketch the chart on the whiteboard**; OpenAI vision reads the drawing (bar shapes, handwritten labels, the table name); if the sketched chart doesn't suit the data it builds the one that does and **explains why**, then **posts the chart back into the channel**
+
+**📧 Share beyond Slack**
+- Every answer and every dashboard carries an **Email** button — send the table or the chart to any inbox via **Resend**, so results reach people who aren't in your Slack
 
 **⚠️ Change data** — always confirmed first
 - _"drop the bronze table"_ · _"delete the inactive users"_
