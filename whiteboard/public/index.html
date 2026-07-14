@@ -27,7 +27,7 @@
   th { background:#f6f8fa; }
   .ok { color:var(--accent); font-weight:600; }
   .err { color:#c0392b; }
-  input[type=text] { padding:8px 10px; border:1px solid #d0d5db; border-radius:8px; font-size:14px; width:180px; }
+  input[type=text] { padding:8px 10px; border:1px solid #d0d5db; border-radius:8px; font-size:14px; width:300px; max-width:38vw; }
 </style>
 </head>
 <body>
@@ -121,6 +121,7 @@ document.getElementById('extract').onclick = async () => {
       }
       out.innerHTML = '<div class="ok">✅ '+d.title+' — '+d.rows+' rows from <code>'+d.table+'</code></div>'
         + '<div class="muted" style="margin-top:6px">I read your sketch as: “'+d.described+'”</div>'
+        + (d.revisedFrom ? '<div class="muted" style="margin-top:4px">🔎 I checked the render and switched <b>'+d.revisedFrom+'→'+d.chartType+'</b> for readability'+(d.critique?' ('+d.critique+')':'')+'.</div>' : '')
         + '<img src="data:image/png;base64,'+d.png+'" style="max-width:100%;border:1px solid #e3e6ea;border-radius:8px;margin-top:10px">'
         + '<div style="margin-top:8px"><a href="'+d.url+'" target="_blank">Open in Tableau</a>'
         + (d.posted ? ' · <span class="ok">posted to Slack ✓</span>' : '') + '</div>';

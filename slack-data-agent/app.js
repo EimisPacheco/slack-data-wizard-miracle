@@ -662,16 +662,18 @@ async function buildDashboard(text, candidates, userId, channel, client) {
 
     const r = await buildAndDeploy(spec, {
       workbookName: (spec.title || `${spec.table} ${spec.chartType}`).slice(0, 60),
-      outDir: os.tmpdir(), catalog: ctx.catalog, schema: ctx.schema,
+      outDir: os.tmpdir(), catalog: ctx.catalog, schema: ctx.schema, description: text,
     });
     const url = `${env.SERVER}/#/site/${env.SITE_NAME}/workbooks/${r.workbookId}`;
+    // If the vision critic rebuilt it as a clearer chart type, tell the user why.
+    const revised = r.revisedFrom ? ` · _switched ${r.revisedFrom}→${r.critique.betterChartType} for readability_` : '';
 
-    await edit(`:white_check_mark: *${spec.title || spec.table}* — ${r.rows} rows from \`${spec.table}\``);
+    await edit(`:white_check_mark: *${spec.title || spec.table}* — ${r.rows} rows from \`${spec.table}\`${revised}`);
     try {
       await client.files.uploadV2({
         channel_id: channel, file: r.png, filename: `${spec.table}.png`,
         title: spec.title || spec.table,
-        initial_comment: `📊 *${spec.title || spec.table}* · <${url}|Open in Tableau>`,
+        initial_comment: `📊 *${spec.title || spec.table}* · <${url}|Open in Tableau>${revised}`,
       });
     } catch (e) {
       // files:write was added to the manifest — if the app hasn't been reinstalled yet, the

@@ -116,7 +116,7 @@ app.post('/dashboard', async (req, res) => {
     const env = loadEnv();
     const r = await buildAndDeploy(spec, {
       workbookName: (spec.title || `${spec.table} ${spec.chartType}`).slice(0, 60),
-      outDir: os.tmpdir(), catalog: c, schema: s,
+      outDir: os.tmpdir(), catalog: c, schema: s, description: described,
     });
     const url = `${env.SERVER}/#/site/${env.SITE_NAME}/workbooks/${r.workbookId}`;
     const chartPng = fs.readFileSync(r.png);
@@ -136,7 +136,10 @@ app.post('/dashboard', async (req, res) => {
 
     res.json({
       ok: true, described, title: spec.title || spec.table, explanation: spec.explanation,
-      chartType: spec.chartType, table: spec.table, rows: r.rows,
+      // If the vision critic swapped the chart type for readability, report what it actually built.
+      chartType: r.revisedFrom ? r.critique.betterChartType : spec.chartType,
+      revisedFrom: r.revisedFrom || null, critique: r.critique?.reason || null,
+      table: spec.table, rows: r.rows,
       url, png: chartPng.toString('base64'), posted,
     });
   } catch (err) {

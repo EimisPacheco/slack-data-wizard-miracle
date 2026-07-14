@@ -7,6 +7,40 @@ import { KNOWN_MARKS, KNOWN_DERIVATIONS } from './twbgen.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const dbx = await import(path.join(ROOT, 'slack-data-agent', 'databricks.js'));
+const { callVision } = await import(path.join(ROOT, 'pdf-extract', 'vision.js'));
+
+/**
+ * Vision critic: the model LOOKS at the chart it just produced and judges whether it's actually
+ * readable — overlapping labels, too many pie slices, a cramped plot. If a different chart type
+ * from our vocabulary would clearly read better, it says so, and buildAndDeploy rebuilds once.
+ * This is the same "AI validates its own output" principle as the SQL guard, applied to pixels.
+ * @returns {Promise<{good:boolean, reason:string, betterChartType:string|null}>}
+ */
+export async function critiqueChart(pngBuffer, spec, description = '') {
+  if (!process.env.OPENAI_API_KEY) return { good: true, reason: 'no critic', betterChartType: null };
+  const prompt =
+`You are a strict data-visualization critic. This image is a "${spec.chartType}" chart just rendered ` +
+`for the request: "${description || spec.title || 'a chart'}".
+Judge ONLY its visual quality as shown:
+- Are any labels overlapping, colliding, or unreadable?
+- Is the chart type appropriate for how many categories are visible? (A pie with more than ~6 slices,
+  or with tiny crowded slices, is hard to read — a horizontal bar chart is almost always clearer.)
+- Is the plot cramped or well proportioned?
+Reply with JSON only:
+{"good": true|false, "reason": "<one short phrase>", "betterChartType": "bar|hbar|line|area|scatter|pie|null"}
+Set "betterChartType" ONLY if switching to that type (from bar/hbar/line/area/scatter/pie) would clearly
+be more readable for THIS data; otherwise null. Prefer "hbar" for many categories or long labels.`;
+  try {
+    const text = await callVision(prompt, pngBuffer);
+    let t = text.replace(/```(json)?/g, '').trim();
+    const a = t.indexOf('{'), b = t.lastIndexOf('}');
+    if (a !== -1 && b > a) t = t.slice(a, b + 1);
+    const v = JSON.parse(t);
+    const better = KNOWN_CHART_TYPES.has(v.betterChartType) ? v.betterChartType : null;
+    return { good: v.good !== false, reason: String(v.reason || ''), betterChartType: better };
+  } catch { return { good: true, reason: 'critic unavailable', betterChartType: null }; }
+}
+const KNOWN_CHART_TYPES = new Set(['bar', 'hbar', 'line', 'area', 'scatter', 'pie']);
 
 const SYSTEM = `You are an expert in VizQL — Tableau's Visual Query Language. It is your native
 tongue: to you a chart is not a picture, it is fields placed on the rows and columns shelves plus

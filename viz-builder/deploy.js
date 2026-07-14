@@ -83,7 +83,8 @@ export async function renderView(env, viewId, outPath) {
 }
 
 /** Full pipeline: spec -> snapshot -> .twbx -> publish -> PNG. */
-export async function buildAndDeploy(spec, { workbookName, outDir, catalog, schema } = {}) {
+export async function buildAndDeploy(spec, opts = {}) {
+  const { workbookName, outDir, catalog, schema, description, critique = true, _retried = false } = opts;
   const env = loadEnv();
   const columns = await introspect(env, spec.table, catalog, schema);
 
@@ -106,6 +107,19 @@ export async function buildAndDeploy(spec, { workbookName, outDir, catalog, sche
   if (!view) throw new Error(`workbook ${workbookId} published but reported no views — cannot render`);
   const png = path.join(dir, `${spec.table}_${spec.chartType}.png`);
   const rendered = await renderView(env, view.id, png);
+
+  // The model LOOKS at what it just built. If the render is unreadable and a different chart type
+  // would clearly be clearer (e.g. a 10-slice pie → horizontal bar), rebuild ONCE with that type.
+  if (critique && !_retried) {
+    const { critiqueChart } = await import('./spec.js');
+    const verdict = await critiqueChart(fs.readFileSync(rendered.path), spec, description).catch(() => ({ good: true }));
+    if (!verdict.good && verdict.betterChartType && verdict.betterChartType !== spec.chartType) {
+      const retrySpec = { ...spec, chartType: verdict.betterChartType, vizql: undefined };
+      const out = await buildAndDeploy(retrySpec, { ...opts, _retried: true });
+      return { ...out, critique: verdict, revisedFrom: spec.chartType };
+    }
+    return { workbookId, viewId: view.id, png: rendered.path, bytes: rendered.bytes, rows: csv.split('\n').length - 2, critique: verdict };
+  }
 
   return { workbookId, viewId: view.id, png: rendered.path, bytes: rendered.bytes, rows: csv.split('\n').length - 2 };
 }
