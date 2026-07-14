@@ -161,12 +161,15 @@ export function generateTwb({ spec, columns }) {
       break;
     case 'pie':
       // A pie lives entirely on the marks card: nothing on rows/cols, the category on
-      // color and the measure on the wedge size/angle.
+      // color and the measure on the wedge size/angle. Labels carry the category and its
+      // share of the total (a table-calc field added below).
       mark = 'Pie';
       use(spec.dimension, 'none'); use(spec.measure, aggKind);
       rows = ''; cols = '';
       encodings += `\n              <color column='${dimInst}' />`;
       encodings += `\n              <size column='${measureInst}' />`;
+      encodings += `\n              <text column='${dimInst}' />`;
+      encodings += `\n              <text column='${ref('[usr:Calculation_PctOfTotal:nk]')}' />`;
       break;
     case 'scatter': {
       mark = 'Circle';
@@ -213,7 +216,31 @@ export function generateTwb({ spec, columns }) {
       instances.push(`    <column-instance column='[${esc(field)}]' derivation='${derivation(k)}' name='${instanceName(field, k)}' pivot='key' type='${instType(k)}' />`);
     }
   }
+  // Pie: "% of total" is a table-calculated field, declared alongside the real columns.
+  if (spec.chartType === 'pie' && !spec.vizql) {
+    // LOD ({ SUM(x) } = table-wide total) computes the share; the calc RETURNS the formatted
+    // label string itself ("39.0%") because default-format on a calc column doesn't reach
+    // mark labels reliably.
+    colDefs.push(`    <column caption='% of Total' datatype='string' name='[Calculation_PctOfTotal]' role='measure' type='nominal'>
+      <calculation class='tableau' formula='STR(ROUND(SUM([${esc(spec.measure)}])/MIN({ SUM([${esc(spec.measure)}]) })*100,1)) + "%"' />
+    </column>`);
+    instances.push(`    <column-instance column='[Calculation_PctOfTotal]' derivation='User' name='[usr:Calculation_PctOfTotal:nk]' pivot='key' type='nominal' />`);
+  }
   const deps = [...colDefs, ...instances].map(l => '      ' + l.trim()).join('\n');
+
+  // Labels on marks need an explicit style rule or Tableau hides them; a color encoding
+  // earns a legend card in the window so readers can decode the palette.
+  const hasText = encodings.includes('<text ');
+  const colorParam = (encodings.match(/<color column='([^']+)'/) || [])[1] || null;
+  const styleBlock = hasText ? `
+        <style>
+          <style-rule element='mark'>
+            <format attr='mark-labels-show' value='true' />
+          </style-rule>
+        </style>` : '';
+  const legendCard = colorParam
+    ? `<edge name='right'><strip size='160'><card pane-specification-id='0' param='${colorParam}' type='color' /></strip></edge>`
+    : '';
 
   const title = spec.title || `${spec.aggregation || ''} ${spec.measure || ''} by ${spec.dimension || ''}`.trim();
 
@@ -251,7 +278,7 @@ ${instances.join('\n')}
 ${deps}
           </datasource-dependencies>
           <aggregation value='true' />
-        </view>
+        </view>${styleBlock}
         <panes>
           <pane selection-relaxation-option='selection-relaxation-allow'>
             <view><breakdown value='auto' /></view>
@@ -270,7 +297,7 @@ ${deps}
     <window class='worksheet' maximized='true' name='${esc(spec.sheetName || 'Viz')}'>
       <cards><edge name='left'><strip size='160'>
         <card type='pages' /><card type='filters' /><card type='marks' />
-      </strip></edge></cards>
+      </strip></edge>${legendCard}</cards>
       <simple-id uuid='{a1b2c3d4-0002-0002-0002-000000000002}' />
     </window>
   </windows>
