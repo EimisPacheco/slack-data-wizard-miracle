@@ -24,6 +24,7 @@ const { analyseCsv } = await import('../csv-to-db/csv.js');
 const { extractPdf } = await import('../pdf-extract/extract.js');
 const { card, cardClassic, dataTable, tableClassic, postRich } = await import('./blocks.js');
 const { fromSearch, synthetic } = await import('../datagen/datagen.js');
+const { sendEmail, tableHtml, emailShell, emailConfigured } = await import('./email.js');
 
 const DEFAULT_CATALOG = process.env.DATABRICKS_CATALOG || 'workspace';
 const DEFAULT_SCHEMA = process.env.DATABRICKS_SCHEMA || 'data_wizard';
@@ -39,6 +40,19 @@ let uploadSeq = 0;
 const pendingSql = new Map();   // actionId -> { plan, context }
 let sqlSeq = 0;                 // monotonic suffix for confirmation ids — never reused
 const history = new Map();      // userId -> [{ q, sql }] last 3 — lets follow-up questions resolve
+// Content behind each "📧 Email" button, so the email is built from clean data, not scraped blocks.
+const emailable = new Map();    // id -> { kind, ... }
+let emailSeq = 0;
+function cacheEmailable(payload) {
+  const id = `em_${++emailSeq}`;
+  emailable.set(id, payload);
+  if (emailable.size > 50) emailable.delete(emailable.keys().next().value); // evict oldest
+  return id;
+}
+// The Email button, appended to a result's blocks. Omitted when Resend isn't configured.
+const emailButton = id => ({ type: 'actions', elements: [
+  { type: 'button', text: { type: 'plain_text', text: '📧 Email' }, action_id: 'email_msg', value: id },
+] });
 function remember(userId, q, sql) {
   if (!history.has(userId)) history.set(userId, []);
   const h = history.get(userId);
@@ -270,15 +284,21 @@ async function handleQuestion(text, userId, channel, client) {
 
   if (out.kind === 'read') {
     const cols = out.rows.length ? Object.keys(out.rows[0]) : [];
+    // Offer to email the answer — cache the clean data behind the button.
+    const emailBtn = (emailConfigured() && out.rows.length)
+      ? [emailButton(cacheEmailable({ kind: 'query', explanation: plan.explanation, sql: plan.sql, cols, rows: out.rows, ns: `${ctx.catalog}.${ctx.schema}` }))]
+      : [];
     const rich = [
       { type: 'section', text: { type: 'mrkdwn', text: plan.explanation || 'Result' } },
       ...(out.rows.length ? [dataTable(cols, out.rows, `${out.rows.length} row${out.rows.length === 1 ? '' : 's'} · ${ctx.catalog}.${ctx.schema}`)] : [{ type: 'section', text: { type: 'mrkdwn', text: '_no rows_' } }]),
       { type: 'context', elements: [{ type: 'mrkdwn', text: `\`${plan.sql}\`  ·  _${ctx.catalog}.${ctx.schema}_${out.rows.length > 100 ? ` · showing 100 of ${out.rows.length}` : ''}` }] },
+      ...emailBtn,
     ];
     const classic = [
       { type: 'section', text: { type: 'mrkdwn', text: plan.explanation || 'Result' } },
       ...tableClassic(cols, out.rows),
       { type: 'context', elements: [{ type: 'mrkdwn', text: `\`${plan.sql}\`  ·  _${ctx.catalog}.${ctx.schema}_` }] },
+      ...emailBtn,
     ];
     await postRich(client, channel, plan.explanation || 'Result', rich, classic);
     return { spoken: speakable(plan, out) };
@@ -300,6 +320,77 @@ function speakable(plan, out) {
 
 // URL buttons still emit an action event; ack it or Slack shows a warning icon on the button.
 app.action('open_whiteboard', async ({ ack }) => { await ack(); });
+
+// ─────────────────────────── email a result via Resend ───────────────────────────
+
+// "📧 Email" → a modal asking who to send it to. The cache id + channel ride in private_metadata.
+app.action('email_msg', async ({ ack, body, client }) => {
+  await ack();
+  const id = body.actions[0].value;
+  if (!emailable.has(id)) {
+    await client.chat.postEphemeral({ channel: body.channel.id, user: body.user.id,
+      text: 'That result expired — ask again, then email the fresh answer.' }).catch(() => {});
+    return;
+  }
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: 'modal', callback_id: 'send_email',
+      private_metadata: JSON.stringify({ id, channel: body.channel.id, user: body.user.id }),
+      title: plain('Email this'), submit: plain('Send'), close: plain('Cancel'),
+      blocks: [
+        { type: 'input', block_id: 'to', label: plain('Send to'),
+          element: { type: 'plain_text_input', action_id: 'v', placeholder: plain('name@company.com') } },
+        { type: 'input', block_id: 'note', optional: true, label: plain('Note (optional)'),
+          element: { type: 'plain_text_input', action_id: 'v', multiline: true, placeholder: plain('A line of context for the recipient…') } },
+        { type: 'context', elements: [{ type: 'mrkdwn', text: '_Resend only delivers to your own account address until you verify a domain._' }] },
+      ],
+    },
+  }).catch(async e => {
+    await client.chat.postEphemeral({ channel: body.channel.id, user: body.user.id, text: `:x: Couldn't open the email form: ${e.data?.error || e.message}` }).catch(() => {});
+  });
+});
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+app.view('send_email', async ({ ack, body, view, client }) => {
+  const { id, channel, user } = JSON.parse(view.private_metadata);
+  const to = (view.state.values.to.v.value || '').trim();
+  const note = (view.state.values.note?.v?.value || '').trim();
+  if (!EMAIL_RE.test(to)) {
+    await ack({ response_action: 'errors', errors: { to: 'Enter a valid email address.' } });
+    return;
+  }
+  await ack();
+
+  const payload = emailable.get(id);
+  if (!payload) { await post(client, channel, ':x: That result expired before it could be emailed.'); return; }
+
+  try {
+    let html, subject, attachments;
+    if (payload.kind === 'chart') {
+      subject = `Data Wizard — ${payload.title}`;
+      const png = fs.readFileSync(payload.pngPath).toString('base64');
+      attachments = [{ filename: `${payload.title.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40) || 'chart'}.png`, content: png, content_id: 'chart' }];
+      html = emailShell({
+        heading: payload.title, note,
+        bodyHtml: `<img src="cid:chart" alt="${payload.title}" style="max-width:100%;border:1px solid #e3e6ea;border-radius:8px">`,
+        footer: payload.url ? `Open in Tableau: ${payload.url}` : '',
+      });
+    } else {
+      subject = `Data Wizard — ${payload.explanation?.slice(0, 60) || 'query result'}`;
+      html = emailShell({
+        heading: payload.explanation || 'Query result', note,
+        bodyHtml: tableHtml(payload.cols, payload.rows),
+        footer: `${payload.sql}  ·  ${payload.ns}`,
+      });
+    }
+    await sendEmail({ to, subject, html, attachments });
+    await post(client, channel, `:e-mail: Emailed to *${to}*.`);
+  } catch (err) {
+    await post(client, channel, `:x: ${err.message}`);
+  }
+});
 
 /** Only the person who asked may confirm or cancel their own destructive SQL. */
 async function ownsPending(body, client, entry) {
@@ -699,6 +790,15 @@ async function buildDashboard(text, candidates, userId, channel, client) {
       await post(client, channel,
         `📊 *${spec.title || spec.table}* — <${url}|Open in Tableau>\n` +
         `_(Couldn't attach the image: ${e.data?.error || e.message}. Reinstall the app to grant \`files:write\`.)_`);
+    }
+
+    // The chart is an image upload and can't hold a button, so offer email in a small follow-up.
+    // r.png stays on disk (deploy.js never unlinks it), so the email can attach it.
+    if (emailConfigured()) {
+      const id = cacheEmailable({ kind: 'chart', title: spec.title || spec.table, explanation: spec.explanation || '', pngPath: r.png, url });
+      await postRich(client, channel, 'Email this chart?',
+        [{ type: 'section', text: { type: 'mrkdwn', text: `:e-mail: Email *${spec.title || spec.table}*?` } }, emailButton(id)],
+        [{ type: 'section', text: { type: 'mrkdwn', text: `:e-mail: Email *${spec.title || spec.table}*?` } }, emailButton(id)]);
     }
   } catch (err) {
     await edit(`:x: Dashboard failed: ${err.message}`);
