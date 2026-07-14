@@ -31,18 +31,28 @@ async function poll(statementId) {
  * Runs one SQL statement. Returns { columns: [{name,type}], rows: [[...]], rowObjects: [{}] }.
  * @param {object} opts { catalog, schema } set the default namespace for the statement.
  */
-// Databricks returns opaque 400s when the serverless warehouse can't run the statement — most often
-// a stopped warehouse or (on Community Edition) exhausted free daily compute. Surface a human message
-// instead of raw JSON so the bot — and its spoken reply — explains what's actually wrong.
+// Databricks returns opaque 400s when the serverless warehouse can't run the statement. Surface a
+// human message instead of raw JSON so the bot — and its spoken reply — explains what's wrong.
+const isCreditExhausted = t => /free daily limit|community_edition_credit_exhausted/i.test(t || '');
+
 function friendlyDbxError(status, text) {
-  const low = (text || '').toLowerCase();
-  if (low.includes('free daily limit') || low.includes('community_edition_credit_exhausted')) {
-    return 'Databricks Community Edition has used up its free daily compute, so the SQL warehouse can’t start — it resets the next day. Your request was fine; the warehouse is just unavailable right now.';
-  }
-  if (low.includes('could not be processed by the warehouse')) {
-    return 'The Databricks SQL warehouse isn’t available right now (stopped or still starting up). Give it a minute and try again.';
-  }
+  if (isCreditExhausted(text)) return CREDIT_MSG;
   return `Databricks HTTP ${status}: ${(text || '').slice(0, 200)}`;
+}
+const CREDIT_MSG = 'Databricks Community Edition has used up its free daily compute, so the SQL warehouse can’t start until it resets the next day. Try again tomorrow — your request itself was fine.';
+
+// A "could not be processed by the warehouse" 400 means the serverless warehouse is stopped. The
+// statement API doesn't say WHY, so probe /start: it reveals whether the account is out of free
+// daily credits (Community Edition) vs merely asleep — and for an asleep warehouse the probe also
+// kicks off the wake-up, so the user's next attempt succeeds.
+async function warehouseDownReason() {
+  try {
+    const r = await fetch(`${HOST()}/api/2.0/sql/warehouses/${WAREHOUSE()}/start`, { method: 'POST', headers: headers() });
+    if (isCreditExhausted(await r.text())) return CREDIT_MSG;
+    return 'The Databricks SQL warehouse was asleep — I’ve started it (takes ~30s). Please try again in a moment.';
+  } catch {
+    return 'The Databricks SQL warehouse isn’t available right now. Give it a minute and try again.';
+  }
 }
 
 export async function runSql(statement, opts = {}) {
@@ -58,7 +68,11 @@ export async function runSql(statement, opts = {}) {
   const r = await fetch(`${HOST()}/api/2.0/sql/statements`, {
     method: 'POST', headers: headers(), body: JSON.stringify(body), signal: AbortSignal.timeout(120000),
   });
-  if (!r.ok) throw new Error(friendlyDbxError(r.status, await r.text()));
+  if (!r.ok) {
+    const text = await r.text();
+    if (/could not be processed by the warehouse/i.test(text)) throw new Error(await warehouseDownReason());
+    throw new Error(friendlyDbxError(r.status, text));
+  }
 
   let result = await r.json();
   if (['PENDING', 'RUNNING'].includes(result.status?.state)) {
