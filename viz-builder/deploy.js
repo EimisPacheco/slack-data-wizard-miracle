@@ -99,10 +99,15 @@ async function timeSeriesSnapshot(env, spec, columns, catalog, schema, dateDim) 
   const measExpr = agg === 'COUNT' ? 'COUNT(*)'
     : agg === 'COUNTD' ? `COUNT(DISTINCT \`${spec.measure}\`)`
     : `${agg}(\`${spec.measure}\`)`;
-  // The value column's name. Never undefined (COUNT specs omit measure) and never equal to the
-  // date column (both-named-the-same collapses the two columns and silently breaks the workbook).
-  let alias = spec.measure;
-  if (!alias || alias === dateDim) alias = agg === 'COUNT' ? 'signups' : 'value';
+  // The value column's name / axis label. A COUNT is COUNT(*) — a count of ROWS — so its value has
+  // nothing to do with spec.measure; labeling that axis with the (id) column the model happened to
+  // name reads as nonsense ("signup_id" going 2→10). Name it for what's actually counted: the
+  // table's records (humanized). SUM/AVG/etc DO derive from the measure column, so those keep it.
+  // Never undefined, and never equal to the date column (a name collision collapses both columns).
+  let alias = agg === 'COUNT'
+    ? spec.table.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
+    : spec.measure;
+  if (!alias || alias === dateDim) alias = 'value';
   const dq = `\`${dateDim}\``;
 
   const mark = spec.vizql?.mark;
