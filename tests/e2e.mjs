@@ -238,7 +238,7 @@ async function sectionE() {
     return `${r.columns.length} cols × ${r.rows.length} rows via ${r.via}`;
   });
   await test('E02', 'whiteboard table sketch → Databricks table', async () => {
-    const img = fs.readFileSync('/tmp/qa-sketch-table.png').toString('base64');
+    const img = fs.readFileSync(path.join(ROOT, 'tests', 'fixtures', 'sketch-table.png')).toString('base64');
     const r = await fetch(`${WB}/extract`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image: `data:image/png;base64,${img}`, table: 'qa_e2e_fruit' }),
@@ -248,7 +248,7 @@ async function sectionE() {
     return `${r.table} · ${r.rowsInserted} rows · cols: ${r.columns.join(',')}`;
   });
   await test('E03', 'whiteboard pie sketch + hint → published dashboard', async () => {
-    const img = fs.readFileSync('/tmp/qa-sketch-pie.png').toString('base64');
+    const img = fs.readFileSync(path.join(ROOT, 'tests', 'fixtures', 'sketch-pie.png')).toString('base64');
     const r = await fetch(`${WB}/dashboard`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image: `data:image/png;base64,${img}`, hint: 'countries_gdp', channel: '' }),

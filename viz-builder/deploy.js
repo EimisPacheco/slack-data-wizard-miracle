@@ -106,10 +106,14 @@ function publish(env, twbxPath, workbookName) {
   try {
     out = execFileSync(py, [script, twbxPath, workbookName], { env: { ...process.env, ...env }, encoding: 'utf8' });
   } catch (e) {
-    // The Tableau publish runs in a Python venv (TSC_PYTHON). If that venv is missing (deleted,
-    // fresh clone) the error is a cryptic ENOENT / ModuleNotFoundError — turn it into the fix.
-    const msg = `${e.message}${e.stderr || ''}`;
-    if (/ENOENT|No such file|ModuleNotFoundError|tableauserverclient/i.test(msg)) {
+    // The Tableau publish runs in a Python venv (TSC_PYTHON). Only a genuine setup failure —
+    // python binary missing (spawn ENOENT) or the package not installed — should tell the user
+    // to rebuild it. Every OTHER publish error (transient Tableau 5xx, auth) surfaces a Python
+    // traceback whose PATHS contain "tableauserverclient", so matching that word misreported
+    // real server hiccups as "rebuild your venv". Match the precise signatures instead.
+    const stderr = e.stderr || '';
+    const setupBroken = e.code === 'ENOENT' || /ModuleNotFoundError|No module named/i.test(stderr);
+    if (setupBroken) {
       throw new Error(
         'Tableau publisher Python is not set up. Rebuild it:\n' +
         '  python3 -m venv .venv && .venv/bin/python -m pip install -r viz-builder/requirements.txt\n' +
