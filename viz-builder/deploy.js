@@ -79,10 +79,15 @@ async function timeSeriesSnapshot(env, spec, columns, catalog, schema) {
     `FROM \`${c}\`.\`${s}\`.\`${spec.table}\` WHERE \`${spec.dimension}\` IS NOT NULL GROUP BY 1 ORDER BY 1 LIMIT 100000`);
   const csv = rowsToCsv([spec.dimension, alias], r.rows);
   // One row per period already → the workbook just SUMs (a no-op over single rows) the value.
+  // Force the plain line/area path (chartType, not vizql): the model's vizql block re-applies
+  // COUNT per row, which on one-row-per-day data is 1 again. Stripping it uses SUM over the
+  // pre-aggregated value = the real daily total.
+  const chartType = ['line', 'area'].includes(spec.chartType) ? spec.chartType
+    : (spec.vizql?.mark === 'Area' ? 'area' : 'line');
   return {
     csv,
     columns: [{ name: spec.dimension, type: 'timestamp' }, { name: alias, type: 'double' }],
-    spec: { ...spec, aggregation: 'SUM' },
+    spec: { ...spec, chartType, aggregation: 'SUM', vizql: undefined },
     rows: r.rows.length,
   };
 }
@@ -149,9 +154,11 @@ export async function buildAndDeploy(spec, opts = {}) {
   // A line/area "over time" needs the date grouped. Tableau's embedded-CSV truncation can't be
   // trusted (it produced a flat line of 1s), so pre-aggregate in SQL for those. Everything else
   // gets the raw snapshot and lets Tableau aggregate.
+  // The model expresses a line as chartType:'line' AND a vizql block (mark:Line) — so DON'T exclude
+  // vizql here, or the pre-aggregation is skipped and the bug returns. Detect either shape.
   const dimCol = columns.find(x => x.name === spec.dimension);
-  const isTimeSeries = ['line', 'area'].includes(spec.chartType) && !spec.vizql
-    && dimCol && /date|timestamp/i.test(dimCol.type);
+  const isLineArea = ['line', 'area'].includes(spec.chartType) || ['Line', 'Area'].includes(spec.vizql?.mark);
+  const isTimeSeries = isLineArea && dimCol && /date|timestamp/i.test(dimCol.type);
   let csv = '', genSpec = spec, genCols = columns;
   if (isTimeSeries) {
     const ts = await timeSeriesSnapshot(env, spec, columns, catalog, schema);
