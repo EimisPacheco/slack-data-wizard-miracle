@@ -61,9 +61,14 @@ async function tableToCsv(env, table, columns, catalog, schema) {
 
 /**
  * Time-series snapshot: GROUP BY the date in SQL so Tableau gets ONE pre-aggregated row per
- * period. Tableau's embedded-CSV date truncation is unreliable (a line "over time" came out as a
- * flat line of 1s because it never grouped the timestamps in a day), so we do the grouping in
- * Databricks where it's exact. Returns { csv, columns, spec } to feed the workbook generator.
+ * period (Tableau's embedded-CSV date truncation is unreliable — a line "over time" came out as a
+ * flat line because it never grouped the day's timestamps).
+ *
+ * For an ADDITIVE measure (COUNT / SUM) we return the CUMULATIVE running total, because
+ * "<thing> over time" means the growth curve — total-to-date climbing 2→4→6→8→10 — not the
+ * per-day count, which on uniform data is a flat, useless line. Non-additive aggregations
+ * (AVG / COUNTD / MIN / MAX) can't be accumulated, so those stay per-period.
+ * Returns { csv, columns, spec } to feed the workbook generator.
  */
 async function timeSeriesSnapshot(env, spec, columns, catalog, schema) {
   const c = catalog || env.DATABRICKS_CATALOG || 'dbdemos';
@@ -74,20 +79,34 @@ async function timeSeriesSnapshot(env, spec, columns, catalog, schema) {
     : agg === 'COUNTD' ? `COUNT(DISTINCT \`${spec.measure}\`)`
     : `${agg}(\`${spec.measure}\`)`;
   const alias = spec.measure || 'value';
-  const r = await dbx.runSql(
-    `SELECT DATE_TRUNC('${gran}', \`${spec.dimension}\`) AS \`${spec.dimension}\`, ${measExpr} AS \`${alias}\` ` +
-    `FROM \`${c}\`.\`${s}\`.\`${spec.table}\` WHERE \`${spec.dimension}\` IS NOT NULL GROUP BY 1 ORDER BY 1 LIMIT 100000`);
+  const cumulative = agg === 'COUNT' || agg === 'SUM';
+  const dq = `\`${spec.dimension}\``;
+
+  // Per-period totals, then (for additive measures) a running SUM over the ordered periods.
+  const perPeriod =
+    `SELECT DATE_TRUNC('${gran}', ${dq}) AS period, ${measExpr} AS v ` +
+    `FROM \`${c}\`.\`${s}\`.\`${spec.table}\` WHERE ${dq} IS NOT NULL GROUP BY 1`;
+  const query = cumulative
+    ? `SELECT period AS ${dq}, SUM(v) OVER (ORDER BY period ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS \`${alias}\` ` +
+      `FROM (${perPeriod}) ORDER BY period LIMIT 100000`
+    : `SELECT period AS ${dq}, v AS \`${alias}\` FROM (${perPeriod}) ORDER BY period LIMIT 100000`;
+
+  const r = await dbx.runSql(query);
   const csv = rowsToCsv([spec.dimension, alias], r.rows);
-  // One row per period already → the workbook just SUMs (a no-op over single rows) the value.
+
   // Force the plain line/area path (chartType, not vizql): the model's vizql block re-applies
   // COUNT per row, which on one-row-per-day data is 1 again. Stripping it uses SUM over the
-  // pre-aggregated value = the real daily total.
+  // pre-aggregated value = the real running total.
   const chartType = ['line', 'area'].includes(spec.chartType) ? spec.chartType
     : (spec.vizql?.mark === 'Area' ? 'area' : 'line');
+  // Say so in the title when we accumulated, so nobody reads a running total as a daily count.
+  const title = cumulative && spec.title && !/cumulative|running|total|to date/i.test(spec.title)
+    ? `Cumulative ${spec.title}` : spec.title;
+
   return {
     csv,
     columns: [{ name: spec.dimension, type: 'timestamp' }, { name: alias, type: 'double' }],
-    spec: { ...spec, chartType, aggregation: 'SUM', vizql: undefined },
+    spec: { ...spec, chartType, aggregation: 'SUM', vizql: undefined, title, sheetName: title || spec.sheetName },
     rows: r.rows.length,
   };
 }
