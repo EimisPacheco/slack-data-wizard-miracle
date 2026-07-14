@@ -38,6 +38,16 @@ export async function introspect(env, table, catalog, schema) {
   return cols;
 }
 
+// Databricks returns timestamps as ISO-8601 ("2026-07-01T09:15:00.000Z"). Tableau's textscan
+// connector will NOT parse that into a real datetime, so date truncation silently fails.
+// Normalise to Tableau's native "2026-07-01 09:15:00".
+const ISO_DT = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?$/;
+const rowsToCsv = (names, rows) => {
+  const norm = v => { const t = v == null ? '' : String(v); const m = t.match(ISO_DT); return m ? `${m[1]} ${m[2]}` : t; };
+  const esc = v => { const t = norm(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  return [names.join(','), ...rows.map(row => row.map(esc).join(','))].join('\n') + '\n';
+};
+
 /** Snapshot the table to CSV — this is what gets embedded in the .twbx. */
 async function tableToCsv(env, table, columns, catalog, schema) {
   const c = catalog || env.DATABRICKS_CATALOG || 'dbdemos';
@@ -46,8 +56,35 @@ async function tableToCsv(env, table, columns, catalog, schema) {
   // Cap the snapshot — an unbounded SELECT on a big table would balloon the .twbx and the
   // statement API response. 100k rows is far beyond anything a chart can show anyway.
   const r = await dbx.runSql(`SELECT ${names.map(n => `\`${n}\``).join(', ')} FROM \`${c}\`.\`${s}\`.\`${table}\` LIMIT 100000`);
-  const esc = v => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
-  return [names.join(','), ...r.rows.map(row => row.map(esc).join(','))].join('\n') + '\n';
+  return rowsToCsv(names, r.rows);
+}
+
+/**
+ * Time-series snapshot: GROUP BY the date in SQL so Tableau gets ONE pre-aggregated row per
+ * period. Tableau's embedded-CSV date truncation is unreliable (a line "over time" came out as a
+ * flat line of 1s because it never grouped the timestamps in a day), so we do the grouping in
+ * Databricks where it's exact. Returns { csv, columns, spec } to feed the workbook generator.
+ */
+async function timeSeriesSnapshot(env, spec, columns, catalog, schema) {
+  const c = catalog || env.DATABRICKS_CATALOG || 'dbdemos';
+  const s = schema || env.DATABRICKS_SCHEMA || 'data_wizard';
+  const gran = { day: 'DAY', month: 'MONTH', year: 'YEAR' }[(spec.dateGranularity || 'day').toLowerCase()] || 'DAY';
+  const agg = (spec.aggregation || 'COUNT').toUpperCase();
+  const measExpr = agg === 'COUNT' ? 'COUNT(*)'
+    : agg === 'COUNTD' ? `COUNT(DISTINCT \`${spec.measure}\`)`
+    : `${agg}(\`${spec.measure}\`)`;
+  const alias = spec.measure || 'value';
+  const r = await dbx.runSql(
+    `SELECT DATE_TRUNC('${gran}', \`${spec.dimension}\`) AS \`${spec.dimension}\`, ${measExpr} AS \`${alias}\` ` +
+    `FROM \`${c}\`.\`${s}\`.\`${spec.table}\` WHERE \`${spec.dimension}\` IS NOT NULL GROUP BY 1 ORDER BY 1 LIMIT 100000`);
+  const csv = rowsToCsv([spec.dimension, alias], r.rows);
+  // One row per period already → the workbook just SUMs (a no-op over single rows) the value.
+  return {
+    csv,
+    columns: [{ name: spec.dimension, type: 'timestamp' }, { name: alias, type: 'double' }],
+    spec: { ...spec, aggregation: 'SUM' },
+    rows: r.rows.length,
+  };
 }
 
 async function signin(env) {
@@ -105,11 +142,23 @@ export async function buildAndDeploy(spec, opts = {}) {
   const dir = fs.mkdtempSync(path.join(outDir || os.tmpdir(), 'viz-'));
   fs.mkdirSync(path.join(dir, 'Data'), { recursive: true });
 
-  const csv = await tableToCsv(env, spec.table, columns, catalog, schema);
+  // A line/area "over time" needs the date grouped. Tableau's embedded-CSV truncation can't be
+  // trusted (it produced a flat line of 1s), so pre-aggregate in SQL for those. Everything else
+  // gets the raw snapshot and lets Tableau aggregate.
+  const dimCol = columns.find(x => x.name === spec.dimension);
+  const isTimeSeries = ['line', 'area'].includes(spec.chartType) && !spec.vizql
+    && dimCol && /date|timestamp/i.test(dimCol.type);
+  let csv = '', genSpec = spec, genCols = columns;
+  if (isTimeSeries) {
+    const ts = await timeSeriesSnapshot(env, spec, columns, catalog, schema);
+    csv = ts.csv; genSpec = ts.spec; genCols = ts.columns;
+  } else {
+    csv = await tableToCsv(env, spec.table, columns, catalog, schema);
+  }
   fs.writeFileSync(path.join(dir, 'Data', `${spec.table}.csv`), csv);
 
   const twbName = `${spec.table}_${spec.chartType}.twb`;
-  fs.writeFileSync(path.join(dir, twbName), generateTwb({ spec, columns }));
+  fs.writeFileSync(path.join(dir, twbName), generateTwb({ spec: genSpec, columns: genCols }));
 
   // package .twbx = zip of the .twb + Data/
   const twbx = path.join(dir, `${spec.table}_${spec.chartType}.twbx`);
