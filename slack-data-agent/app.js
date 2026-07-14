@@ -776,8 +776,9 @@ async function buildDashboard(text, candidates, userId, channel, client) {
       outDir: os.tmpdir(), catalog: ctx.catalog, schema: ctx.schema, description: text,
     });
     const url = `${env.SERVER}/#/site/${env.SITE_NAME}/workbooks/${r.workbookId}`;
-    // If the vision critic rebuilt it as a clearer chart type, tell the user why.
-    const revised = r.revisedFrom ? ` · _switched ${r.revisedFrom}→${r.critique.betterChartType} for readability_` : '';
+    // If the reviewer agent judged the first render broken and rebuilt a corrected chart, say so.
+    // (healChart returns { good, problem, newSpec } — deploy.js surfaces the problem as r.healed.)
+    const revised = r.healed ? ` · _reviewer agent corrected it: ${r.healed}_` : '';
 
     await edit(`:white_check_mark: *${spec.title || spec.table}* — ${r.rows} rows from \`${spec.table}\`${revised}`);
     try {
