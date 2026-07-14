@@ -65,7 +65,21 @@ async function signin(env) {
 function publish(env, twbxPath, workbookName) {
   const py = process.env.TSC_PYTHON || env.TSC_PYTHON || 'python3';
   const script = path.resolve(import.meta.dirname, 'publish.py');
-  const out = execFileSync(py, [script, twbxPath, workbookName], { env: { ...process.env, ...env }, encoding: 'utf8' });
+  let out;
+  try {
+    out = execFileSync(py, [script, twbxPath, workbookName], { env: { ...process.env, ...env }, encoding: 'utf8' });
+  } catch (e) {
+    // The Tableau publish runs in a Python venv (TSC_PYTHON). If that venv is missing (deleted,
+    // fresh clone) the error is a cryptic ENOENT / ModuleNotFoundError — turn it into the fix.
+    const msg = `${e.message}${e.stderr || ''}`;
+    if (/ENOENT|No such file|ModuleNotFoundError|tableauserverclient/i.test(msg)) {
+      throw new Error(
+        'Tableau publisher Python is not set up. Rebuild it:\n' +
+        '  python3 -m venv .venv && .venv/bin/python -m pip install -r viz-builder/requirements.txt\n' +
+        `(TSC_PYTHON=${py})`);
+    }
+    throw e;
+  }
   const m = out.match(/PUBLISHED:\s*(\S+)/);
   const views = [...out.matchAll(/^VIEW\s+(.+?)\s+(\S+)$/gm)].map(x => ({ name: x[1], id: x[2] }));
   if (!m) throw new Error('publish did not report a workbook id:\n' + out);
