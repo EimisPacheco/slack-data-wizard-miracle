@@ -230,19 +230,21 @@ export async function buildAndDeploy(spec, opts = {}) {
   const png = path.join(dir, `${spec.table}_${spec.chartType}.png`);
   const rendered = await renderView(env, view.id, png);
 
-  // The model LOOKS at what it just built. If the render is unreadable and a different chart type
-  // would clearly be clearer (e.g. a 10-slice pie → horizontal bar), rebuild ONCE with that type.
-  // NOT for date charts: a cumulative "over time" line is the intended, correct view — letting the
-  // critic switch it to a bar both loses the meaning AND rebuilt as a raw-timestamp mess.
-  if (critique && !isDateChart && !_retried) {
-    const { critiqueChart } = await import('./spec.js');
-    const verdict = await critiqueChart(fs.readFileSync(rendered.path), spec, description).catch(() => ({ good: true }));
-    if (!verdict.good && verdict.betterChartType && verdict.betterChartType !== spec.chartType) {
-      const retrySpec = { ...spec, chartType: verdict.betterChartType, vizql: undefined };
-      const out = await buildAndDeploy(retrySpec, { ...opts, _retried: true });
-      return { ...out, critique: verdict, revisedFrom: spec.chartType };
+  // SELF-HEALING: the model LOOKS at what it just rendered and judges whether it actually
+  // represents the data (a flat line, a single dot, an unreadable mess = broken). If broken, the
+  // VizQL expert regenerates a corrected chart and we rebuild ONCE. It's told the underlying data
+  // so it can tell "this should have 5 rising points but shows 1". A correct chart (incl. a steady
+  // diagonal cumulative line) is left alone.
+  if (critique && !_retried) {
+    const { healChart } = await import('./spec.js');
+    const lines = csv.split('\n').filter(Boolean);
+    const dataFacts = `${lines.length - 1} data rows. columns: ${lines[0]}. values: ${lines.slice(1, 7).join(' | ')}${lines.length > 7 ? ' …' : ''}`;
+    const heal = await healChart(fs.readFileSync(rendered.path), genSpec, description, catalog, schema, dataFacts).catch(() => ({ good: true }));
+    if (!heal.good && heal.newSpec) {
+      const out = await buildAndDeploy(heal.newSpec, { ...opts, _retried: true });
+      return { ...out, healed: heal.problem, revisedFrom: spec.chartType };
     }
-    return { workbookId, viewId: view.id, png: rendered.path, bytes: rendered.bytes, rows: csv.split('\n').length - 2, critique: verdict };
+    return { workbookId, viewId: view.id, png: rendered.path, bytes: rendered.bytes, rows: csv.split('\n').length - 2, critique: heal };
   }
 
   return { workbookId, viewId: view.id, png: rendered.path, bytes: rendered.bytes, rows: csv.split('\n').length - 2 };

@@ -42,6 +42,56 @@ be more readable for THIS data; otherwise null. Prefer "hbar" for many categorie
 }
 const KNOWN_CHART_TYPES = new Set(['bar', 'hbar', 'line', 'area', 'scatter', 'pie']);
 
+/**
+ * SELF-HEALING critic. The model — an expert in VizQL that already looks at its own charts —
+ * judges whether the RENDER actually represents the data correctly and meaningfully (not just
+ * "is it readable"). If it's broken (a flat line that should vary, a single point, a blank or
+ * unreadable plot, the wrong chart for the data), it DIAGNOSES the problem and REGENERATES a
+ * corrected chart itself via describeToSpec. This is the project's own thesis applied to its
+ * output: the AI recognizes and fixes its own work instead of us hand-coding each failure.
+ *
+ * @returns {Promise<{good:boolean, problem?:string, newSpec?:object}>}
+ */
+export async function healChart(pngBuffer, spec, description, catalog, schema, dataFacts = '') {
+  if (!process.env.OPENAI_API_KEY) return { good: true };
+  const prompt =
+`You are a strict Tableau/VizQL data-visualization critic, and you FIX your own work.
+This image is a chart just rendered for the request: "${description || spec.title || 'a chart'}".
+Underlying data (already aggregated for the chart): ${dataFacts || 'unknown'}.
+
+Judge whether the chart is CORRECT and MEANINGFUL for that data — not merely pretty:
+- BROKEN: a HORIZONTAL flat line (the same value across every x), a SINGLE point/dot, a blank or
+  near-empty plot, or a chart whose visible values clearly don't match the data above. These mean
+  the data was not grouped or plotted correctly.
+- BROKEN: labels overlapping to the point of being unreadable, or a chart type that fights the data
+  (e.g. a pie with many tiny crowded slices).
+- GOOD: a line that clearly rises or falls, bars of differing heights, a clean readable chart whose
+  shape matches the data. IMPORTANT: a straight DIAGONAL line that steadily rises is GOOD — that is
+  legitimate cumulative growth, NOT an error. Do not "fix" a correct chart.
+
+Reply with JSON only: {"good": true|false, "problem": "<one short phrase — what's wrong, or empty>"}`;
+  let verdict;
+  try {
+    const text = await callVision(prompt, pngBuffer);
+    let t = text.replace(/```(json)?/g, '').trim();
+    const a = t.indexOf('{'), b = t.lastIndexOf('}');
+    if (a !== -1 && b > a) t = t.slice(a, b + 1);
+    verdict = JSON.parse(t);
+  } catch { return { good: true }; }         // critic unavailable → trust the build
+  if (verdict.good !== false) return { good: true };
+
+  // Broken → let the VizQL expert regenerate a corrected chart, told exactly what went wrong.
+  const problem = String(verdict.problem || 'the chart did not represent the data correctly');
+  try {
+    const fixed = await describeToSpec(catalog, schema, [spec.table],
+      `${description || spec.title}\n\nThe chart just produced was BROKEN: ${problem}. ` +
+      `Design a CORRECTED, meaningful chart for this exact data — a different chart type, aggregation, ` +
+      `or VizQL if that reads better. Do not repeat the broken result.`);
+    if (fixed.ok) { fixed.spec.sheetName = fixed.spec.title || spec.sheetName || 'Viz'; return { good: false, problem, newSpec: fixed.spec }; }
+  } catch { /* fall through */ }
+  return { good: false, problem };            // couldn't regenerate — report, keep what we have
+}
+
 const SYSTEM = `You are an expert in VizQL — Tableau's Visual Query Language. It is your native
 tongue: to you a chart is not a picture, it is fields placed on the rows and columns shelves plus
 mark encodings (color, size, label, detail). You turn a request for a chart into a Tableau spec.
