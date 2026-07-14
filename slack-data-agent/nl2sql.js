@@ -71,11 +71,18 @@ async function generate(user) {
   catch { throw new Error(`Model did not return JSON: ${text.slice(0, 120)}`); }
 }
 
-/** context = { catalog, schema } */
-export async function planQuery(request, context) {
+/**
+ * context = { catalog, schema }
+ * history = [{ q, sql }] — the user's recent questions and the SQL that answered them, so
+ * follow-ups ("only the top 3", "what about the US?") resolve against the conversation.
+ */
+export async function planQuery(request, context, history = []) {
   const tables = await describeSchema(context.catalog, context.schema);
   const schema = schemaAsText(tables);
-  const user = `Active namespace: ${context.catalog}.${context.schema}\nSchema:\n${schema}\n\nRequest: ${request}`;
+  const past = history.length
+    ? `\nRecent conversation — the new request may be a FOLLOW-UP that refines one of these:\n${history.map(h => `Q: ${h.q}\nSQL: ${h.sql}`).join('\n')}\n`
+    : '';
+  const user = `Active namespace: ${context.catalog}.${context.schema}\nSchema:\n${schema}\n${past}\nRequest: ${request}`;
 
   // Generate, and if the model emits degenerate SQL, regenerate once before giving up.
   let parsed = await generate(user);

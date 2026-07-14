@@ -35,6 +35,13 @@ const context = new Map();     // userId -> { catalog, schema }
 const pendingUpload = new Map();// userId -> { csvText, filename, columns, dataRows }
 const pendingSql = new Map();   // actionId -> { plan, context }
 let sqlSeq = 0;                 // monotonic suffix for confirmation ids — never reused
+const history = new Map();      // userId -> [{ q, sql }] last 3 — lets follow-up questions resolve
+function remember(userId, q, sql) {
+  if (!history.has(userId)) history.set(userId, []);
+  const h = history.get(userId);
+  h.push({ q, sql });
+  if (h.length > 3) h.shift();
+}
 
 function ctxOf(userId) {
   if (!context.has(userId)) context.set(userId, { catalog: DEFAULT_CATALOG, schema: DEFAULT_SCHEMA });
@@ -209,10 +216,19 @@ async function handleQuestion(text, userId, channel, client) {
       return handleDashboard(text, userId, channel, client);
   }
 
-  const plan = await planQuery(text, ctx);
-  if (!plan.ok) { await post(client, channel, `:no_entry: ${plan.reason}`); return { spoken: `I couldn't answer that. ${plan.reason}` }; }
+  // Writing SQL + a cold warehouse can take 10-25s of dead air — show life immediately,
+  // and remove the note once the real answer posts.
+  const thinking = await post(client, channel, ':mag: On it — reading the schema and writing the SQL…').catch(() => null);
+  const done = () => { if (thinking) client.chat.delete({ channel, ts: thinking.ts }).catch(() => {}); };
+
+  let plan;
+  try { plan = await planQuery(text, ctx, history.get(userId) || []); }
+  catch (err) { done(); throw err; }
+  if (!plan.ok) { done(); await post(client, channel, `:no_entry: ${plan.reason}`); return { spoken: `I couldn't answer that. ${plan.reason}` }; }
+  remember(userId, text, plan.sql);
 
   if (plan.needsConfirmation) {
+    done();
     // Monotonic id — deriving it from the map SIZE reused ids after a confirm/cancel deleted
     // an entry, which could silently swap someone's pending destructive SQL for another.
     const id = `sql_${userId}_${++sqlSeq}`;
@@ -230,7 +246,9 @@ async function handleQuestion(text, userId, channel, client) {
     return { spoken: 'That would change your data, so I will not run it from a voice note. The SQL is posted — confirm it with a click.' };
   }
 
-  const out = await runPlanned(plan, ctx);
+  let out;
+  try { out = await runPlanned(plan, ctx); }
+  finally { done(); }
 
   // The model now writes the DDL, so follow it: after creating a schema/catalog, work inside it.
   const madeSchema = plan.sql.match(/\bcreate\s+schema\s+(?:if\s+not\s+exists\s+)?`?([A-Za-z0-9_]+)`?/i);
