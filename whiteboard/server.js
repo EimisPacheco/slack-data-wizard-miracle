@@ -152,9 +152,11 @@ app.post('/dashboard', requireToken, async (req, res) => {
 
     res.json({
       ok: true, described, title: spec.title || spec.table, explanation: spec.explanation,
-      // If the vision critic swapped the chart type for readability, report what it actually built.
-      chartType: r.revisedFrom ? r.critique.betterChartType : spec.chartType,
-      revisedFrom: r.revisedFrom || null, critique: r.critique?.reason || null,
+      // If the reviewer agent judged the drawn chart wrong for this data, it rebuilt a better one.
+      // (healChart returns {good, problem, newSpec}; deploy.js surfaces r.healed / r.revisedFrom /
+      // r.revisedTo — there is no r.critique.betterChartType, which is what used to crash here.)
+      chartType: r.revisedTo || spec.chartType,
+      revisedFrom: r.revisedFrom || null, critique: r.healed || null,
       table: spec.table, rows: r.rows,
       url, png: chartPng.toString('base64'), posted,
     });

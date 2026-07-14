@@ -122,7 +122,8 @@ document.getElementById('extract').onclick = async () => {
       }
       out.innerHTML = '<div class="ok">✅ '+d.title+' — '+d.rows+' rows from <code>'+d.table+'</code></div>'
         + '<div class="muted" style="margin-top:6px">I read your sketch as: “'+d.described+'”</div>'
-        + (d.revisedFrom ? '<div class="muted" style="margin-top:4px">🔎 I checked the render and switched <b>'+d.revisedFrom+'→'+d.chartType+'</b> for readability'+(d.critique?' ('+d.critique+')':'')+'.</div>' : '')
+        + (d.explanation ? '<div class="muted" style="margin-top:4px">💡 '+d.explanation+'</div>' : '')
+        + (d.revisedFrom ? '<div class="muted" style="margin-top:4px">🔎 A <b>'+d.revisedFrom+'</b> wasn’t the best fit for this data, so I built a <b>'+d.chartType+'</b> instead'+(d.critique?' — '+d.critique:'')+'.</div>' : '')
         + '<img src="data:image/png;base64,'+d.png+'" style="max-width:100%;border:1px solid #e3e6ea;border-radius:8px;margin-top:10px">'
         + '<div style="margin-top:8px"><a href="'+d.url+'" target="_blank">Open in Tableau</a>'
         + (d.posted ? ' · <span class="ok">posted to Slack ✓</span>' : '') + '</div>';

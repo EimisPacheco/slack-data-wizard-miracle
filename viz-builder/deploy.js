@@ -247,7 +247,7 @@ export async function buildAndDeploy(spec, opts = {}) {
     const heal = await healChart(fs.readFileSync(rendered.path), genSpec, description, catalog, schema, dataFacts).catch(() => ({ good: true }));
     if (!heal.good && heal.newSpec) {
       const out = await buildAndDeploy(heal.newSpec, { ...opts, _retried: true });
-      return { ...out, healed: heal.problem, revisedFrom: spec.chartType };
+      return { ...out, healed: heal.problem, revisedFrom: spec.chartType, revisedTo: heal.newSpec.chartType || 'viz' };
     }
     return { workbookId, viewId: view.id, png: rendered.path, bytes: rendered.bytes, rows: csv.split('\n').length - 2, critique: heal };
   }

@@ -73,6 +73,12 @@ Judge whether the chart is CORRECT and MEANINGFUL for that data — not merely p
   clean readable chart whose shape matches the data and shows how it differs. Do not "fix" a chart
   that already shows real variation.
 
+Judge the chart ONLY on whether it is valid, readable and reveals THIS data. Do NOT flag it merely
+because its TYPE differs from what was asked or sketched — the expert may have deliberately chosen a
+better-suited type (a bar/hbar instead of a pie that would be too crowded, for instance). A clean,
+appropriate bar is GOOD even when a pie was requested; never regenerate a chart just to match a
+requested chart type.
+
 Reply with JSON only: {"good": true|false, "problem": "<one short phrase — what's wrong, or empty>"}`;
   let verdict;
   try {
@@ -138,6 +144,10 @@ RULES:
 - Use ONLY tables and columns from the schema provided. Never invent names.
 - For geographic data (countries, regions), use bar or hbar grouped by that column — never a map.
 - pie suits share-per-category with FEW categories (≤8); with more, prefer hbar.
+- If the request or sketch implies a chart type that does NOT suit this data (e.g. a pie drawn for a
+  table with many categories, or a line where the date is uniform), pick the type that DOES suit it
+  and EXPLAIN the swap in "explanation" — e.g. "A pie would be unreadable with 40 countries, so I used
+  a horizontal bar." Never silently force an unsuitable chart, and never refuse — adapt and explain.
 - line and area require a date/timestamp dimension.
 - hbar suits many categories or long labels; bar suits few.
 - For "how many X", use aggregation COUNT.
