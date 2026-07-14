@@ -9,9 +9,13 @@ import os from 'node:os';
 import express from 'express';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
-for (const line of fs.readFileSync(path.join(ROOT, '.env'), 'utf8').split('\n')) {
-  const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
-  if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+// Local dev reads secrets from ../.env; in the cloud (Cloud Run) they arrive as real env vars and
+// there is no file — so a missing .env is fine, not fatal.
+if (fs.existsSync(path.join(ROOT, '.env'))) {
+  for (const line of fs.readFileSync(path.join(ROOT, '.env'), 'utf8').split('\n')) {
+    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+  }
 }
 
 const { extractTable, callVision } = await import(path.join(ROOT, 'pdf-extract', 'vision.js'));
@@ -34,7 +38,19 @@ const app = express();
 app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(import.meta.dirname, 'public')));
 
-app.post('/extract', async (req, res) => {
+// On a PUBLIC url (Cloud Run) the build endpoints must not be open to the internet — anyone could
+// spend the API quota, write Databricks, or post into Slack. When WHITEBOARD_TOKEN is set, every
+// build request must carry it (the Slack bot embeds it in the link, the page forwards it). Locally,
+// with no token set, the guard is a no-op so nothing changes.
+const requireToken = (req, res, next) => {
+  const expected = process.env.WHITEBOARD_TOKEN;
+  if (!expected) return next();
+  const got = req.get('x-wb-token') || req.body?.token || req.query.token;
+  if (got === expected) return next();
+  return res.status(403).json({ ok: false, error: 'forbidden' });
+};
+
+app.post('/extract', requireToken, async (req, res) => {
   try {
     // catalog/schema deliberately NOT taken from the request: an unauthenticated caller could
     // otherwise target any namespace the Databricks token can write.
@@ -94,7 +110,7 @@ async function describeSketch(png, tables, hint) {
   return text;
 }
 
-app.post('/dashboard', async (req, res) => {
+app.post('/dashboard', requireToken, async (req, res) => {
   try {
     const { image, channel, hint } = req.body || {};
     if (!image) return res.status(400).json({ error: 'no image' });
@@ -147,8 +163,13 @@ app.post('/dashboard', async (req, res) => {
   }
 });
 
-const PORT = Number(process.env.WHITEBOARD_PORT || 3200);
-// Loopback ONLY. app.listen(PORT) alone binds 0.0.0.0, which on venue/office WiFi exposes these
-// unauthenticated endpoints — they spend OpenAI/Tableau quota and post into Slack as the bot.
-// To demo from another device, put a tunnel (ngrok/cloudflared) in front instead.
-app.listen(PORT, '127.0.0.1', () => console.log(`🎨 Whiteboard → table on http://localhost:${PORT} (loopback only)`));
+// Cloud Run injects PORT and needs the container to listen on 0.0.0.0; there the endpoints are
+// protected by WHITEBOARD_TOKEN instead of the loopback bind. Locally (no PORT), stay loopback-only
+// so the open endpoints aren't exposed on the LAN.
+const PORT = Number(process.env.PORT || process.env.WHITEBOARD_PORT || 3200);
+const onCloud = !!process.env.PORT || process.env.WHITEBOARD_PUBLIC === '1';
+if (onCloud) {
+  app.listen(PORT, '0.0.0.0', () => console.log(`🎨 Whiteboard → table on :${PORT} (public${process.env.WHITEBOARD_TOKEN ? ', token-guarded' : ', UNGUARDED — set WHITEBOARD_TOKEN'})`));
+} else {
+  app.listen(PORT, '127.0.0.1', () => console.log(`🎨 Whiteboard → table on http://localhost:${PORT} (loopback only)`));
+}

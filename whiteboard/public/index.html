@@ -61,6 +61,7 @@
 const params = new URLSearchParams(location.search);
 const dashMode = params.get('mode') === 'dashboard';
 const channel = params.get('channel') || '';
+const token = params.get('token') || '';   // shared secret the Slack bot's link carries (cloud only)
 if (dashMode) {
   document.title = 'Whiteboard → Dashboard';
   document.querySelector('header h1').textContent = '🎨 Whiteboard → Dashboard';
@@ -111,7 +112,7 @@ document.getElementById('extract').onclick = async () => {
     try {
       const res = await fetch('/dashboard', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ image: canvas.toDataURL('image/png'), channel, hint: document.getElementById('tableName').value })
+        body: JSON.stringify({ image: canvas.toDataURL('image/png'), channel, token, hint: document.getElementById('tableName').value })
       });
       const d = await res.json();
       if (!d.ok) {
@@ -132,7 +133,7 @@ document.getElementById('extract').onclick = async () => {
   try {
     const res = await fetch('/extract', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ image: canvas.toDataURL('image/png'), table: document.getElementById('tableName').value })
+      body: JSON.stringify({ image: canvas.toDataURL('image/png'), token, table: document.getElementById('tableName').value })
     });
     const d = await res.json();
     if (!d.ok) { out.innerHTML = '<span class="err">'+(d.message||d.error||'Extraction failed')+'</span>'; return; }

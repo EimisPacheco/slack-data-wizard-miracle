@@ -15,13 +15,20 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 
 export function loadEnv() {
   const env = {};
-  for (const line of fs.readFileSync(path.join(ROOT, '.env'), 'utf8').split('\n')) {
-    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
-    if (m) {
-      env[m[1]] = m[2];
-      // databricks.js reads process.env, not this object — without this the host is undefined
-      // and every query dies with "Failed to parse URL from undefined/api/2.0/sql/statements".
-      if (!process.env[m[1]]) process.env[m[1]] = m[2];
+  // In the cloud there is no .env — secrets are real env vars. Seed `env` from process.env so
+  // callers that read the returned object (SERVER, SITE_NAME, PAT_*) still work, then overlay the
+  // file if it exists locally.
+  for (const k of Object.keys(process.env)) env[k] = process.env[k];
+  const dotenv = path.join(ROOT, '.env');
+  if (fs.existsSync(dotenv)) {
+    for (const line of fs.readFileSync(dotenv, 'utf8').split('\n')) {
+      const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+      if (m) {
+        env[m[1]] = m[2];
+        // databricks.js reads process.env, not this object — without this the host is undefined
+        // and every query dies with "Failed to parse URL from undefined/api/2.0/sql/statements".
+        if (!process.env[m[1]]) process.env[m[1]] = m[2];
+      }
     }
   }
   return env;

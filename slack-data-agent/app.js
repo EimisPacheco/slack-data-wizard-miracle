@@ -174,7 +174,9 @@ function suggestTableName(raw) {
 const WHITEBOARD_URL = (process.env.WHITEBOARD_URL || 'http://localhost:3200').replace(/\/$/, '');
 
 async function handleWhiteboardLink(mode, channel, client) {
-  const url = `${WHITEBOARD_URL}/?mode=${mode}&channel=${channel}`;
+  // Carry the shared secret so the (public, cloud-hosted) whiteboard accepts the build request.
+  const tok = process.env.WHITEBOARD_TOKEN ? `&token=${encodeURIComponent(process.env.WHITEBOARD_TOKEN)}` : '';
+  const url = `${WHITEBOARD_URL}/?mode=${mode}&channel=${channel}${tok}`;
   const body = mode === 'dashboard'
     ? ':art: *Draw your dashboard* — sketch the chart you want (bars, a line…), write the table name on the board, then click *Build dashboard*. I publish it to Tableau and post the chart back here.'
     : ':art: *Draw your table* — a header row and a few data rows, then click *Extract to table*. It lands in your lakehouse and you can ask me about it.';

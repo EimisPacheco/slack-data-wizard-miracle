@@ -1,0 +1,34 @@
+# Keep the Cloud Build upload small and NEVER ship secrets or host-specific binaries.
+.git
+.env
+.env.*
+**/node_modules
+.venv
+**/.venv
+
+# Host-specific / rebuilt in the image
+**/*.pyc
+__pycache__
+
+# Sample data + heavy assets the whiteboard doesn't need
+**/samples
+data-wizard-images
+docs
+tests
+*.pdf
+*.jpg
+*.png
+pitch-deck.html
+*.html
+!whiteboard/public/index.html
+eimis-bot-hacks.json
+hackathon-user-amazon.csv
+
+# Other sub-projects in this repo, unrelated to the whiteboard
+ask-the-world-anything
+slacky-form-builder
+slacky-passion-intelligence
+tableau-voice-backend
+mcp-server
+voice-agent
+slack-data-agent-AMD
