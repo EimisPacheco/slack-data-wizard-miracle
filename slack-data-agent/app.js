@@ -531,6 +531,9 @@ app.action('cancel_upload', async ({ ack, body, client }) => {
 async function doLoad(uploadId, userId, channel, client, base, medallion, mode = 'replace') {
   const pending = pendingUpload.get(uploadId);
   if (!pending) { await post(client, channel, 'That upload expired — send the file again.'); return; }
+  // Loading a table is a clear "I'm doing something else now" signal — drop any dangling
+  // dashboard picker so it doesn't sit in the channel looking unprompted.
+  await clearPendingDash(userId, client);
   const ctx = ctxOf(userId);
   try {
     await ensureSchema(ctx.catalog, ctx.schema);
@@ -599,7 +602,16 @@ async function tablesMentioned(text, all) {
   return (JSON.parse(t).tables || []).filter(x => valid.has(x));
 }
 
-const pendingDash = new Map(); // userId -> original dashboard request, while we ask for the table
+const pendingDash = new Map(); // userId -> { text, channel, ts } — the "which table?" prompt awaiting a pick
+
+// Remove a dangling "which table?" picker. It's a live dropdown that otherwise lingers in the
+// channel forever — confusing when the user has moved on (e.g. to loading a table).
+async function clearPendingDash(userId, client) {
+  const p = pendingDash.get(userId);
+  if (!p) return;
+  pendingDash.delete(userId);
+  await client.chat.delete({ channel: p.channel, ts: p.ts }).catch(() => {});
+}
 
 async function handleDashboard(text, userId, channel, client) {
   const ctx = ctxOf(userId);
@@ -615,8 +627,8 @@ async function handleDashboard(text, userId, channel, client) {
   let named = [];
   try { named = await tablesMentioned(text, all); } catch { /* fall through to asking */ }
   if (!named.length) {
-    pendingDash.set(userId, text);
-    await post(client, channel, 'Which table should this dashboard use?', [
+    await clearPendingDash(userId, client);   // never leave two pickers stacked
+    const posted = await post(client, channel, 'Which table should this dashboard use?', [
       { type: 'section', text: { type: 'mrkdwn', text: ':bar_chart: *Which table should this dashboard use?* Pick one and I\'ll design the best chart for it.' } },
       { type: 'actions', elements: [{
         type: 'static_select', action_id: 'dash_pick_table',
@@ -624,6 +636,7 @@ async function handleDashboard(text, userId, channel, client) {
         options: all.slice(0, 100).map(t => ({ text: { type: 'plain_text', text: t }, value: t })),
       }] },
     ]);
+    pendingDash.set(userId, { text, channel, ts: posted.ts });
     return { spoken: 'Which table should the dashboard use? I posted the list — pick one and I will design the chart.' };
   }
 
@@ -634,8 +647,13 @@ async function handleDashboard(text, userId, channel, client) {
 app.action('dash_pick_table', async ({ ack, body, client }) => {
   await ack();
   const table = body.actions[0].selected_option.value;
-  const text = pendingDash.get(body.user.id) || `create a dashboard with ${table}`;
+  const p = pendingDash.get(body.user.id);
+  const text = p?.text || `create a dashboard with ${table}`;
   pendingDash.delete(body.user.id);
+  // Consume the picker so it stops sitting there as a live dropdown.
+  await client.chat.update({ channel: body.channel.id, ts: body.message.ts,
+    text: `:bar_chart: Building a dashboard from *${table}*…`,
+    blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `:bar_chart: Building a dashboard from *${table}*…` } }] }).catch(() => {});
   await buildDashboard(`${text} — use the table ${table}`, [table], body.user.id, body.channel.id, client);
 });
 
