@@ -49,6 +49,11 @@ function instType(kind) {
 }
 function ref(name) { return `[${DS}].${name}`; }
 
+// What the serializer can express natively. The spec model speaks VizQL; anything it says
+// outside this vocabulary triggers the internet-research retry in spec.js rather than a failure.
+export const KNOWN_MARKS = new Set(['Automatic', 'Bar', 'Line', 'Area', 'Circle', 'Square', 'Pie', 'Text', 'Shape', 'GanttBar', 'Multipolygon']);
+export const KNOWN_DERIVATIONS = new Set(['sum', 'avg', 'cnt', 'cntd', 'year', 'tday', 'tmonth', 'tyear', 'none']);
+
 /**
  * spec = {
  *   table, chartType: 'bar'|'hbar'|'line'|'scatter'|'map'|'table',
@@ -112,7 +117,28 @@ export function generateTwb({ spec, columns }) {
   const dimKind = dimIsDate ? dateGran : 'none';
   const dimInst = spec.dimension ? ref(instanceName(spec.dimension, dimKind)) : null;
 
-  switch (spec.chartType) {
+  // ---- native VizQL: the model placed fields on shelves itself ----
+  if (spec.vizql) {
+    const v = spec.vizql;
+    mark = KNOWN_MARKS.has(v.mark) ? v.mark : 'Automatic';
+    const shelfRef = it => {
+      const k = KNOWN_DERIVATIONS.has(it.derivation) ? it.derivation : 'none';
+      use(it.field, k);
+      return ref(instanceName(it.field, k));
+    };
+    const join = list => {
+      const refs = (list || []).filter(it => it && it.field).map(shelfRef);
+      return refs.length > 1 ? `(${refs.join(' / ')})` : (refs[0] || '');
+    };
+    cols = join(v.cols);
+    rows = join(v.rows);
+    const TAG = { color: 'color', size: 'size', label: 'text', text: 'text', detail: 'lod', shape: 'shape' };
+    for (const e of v.encodings || []) {
+      const tag = TAG[String(e.shelf || '').toLowerCase()];
+      if (!tag || !e.field) continue;
+      encodings += `\n              <${tag} column='${shelfRef(e)}' />`;
+    }
+  } else switch (spec.chartType) {
     case 'bar':
       mark = 'Bar';
       use(spec.dimension, dimKind); use(spec.measure, aggKind);
@@ -168,8 +194,8 @@ export function generateTwb({ spec, columns }) {
       encodings += `\n              <text column='${measureInst}' />`;
       break;
   }
-  // pie already put its dimension on color — a second color encoding would clash.
-  if (spec.colorField && spec.chartType !== 'map' && spec.chartType !== 'pie') { use(spec.colorField, 'none'); encodings += `\n              <color column='${ref(instanceName(spec.colorField, 'none'))}' />`; }
+  // pie already put its dimension on color, and a vizql spec manages its own encodings.
+  if (spec.colorField && !spec.vizql && spec.chartType !== 'map' && spec.chartType !== 'pie') { use(spec.colorField, 'none'); encodings += `\n              <color column='${ref(instanceName(spec.colorField, 'none'))}' />`; }
 
   // ---- build column defs + instances + dependency block from `used` ----
   const colDefs = [];

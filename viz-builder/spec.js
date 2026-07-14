@@ -3,11 +3,14 @@
  * Uses the same OpenAI model as the rest of Data Wizard (OPENAI_MODEL).
  */
 import path from 'node:path';
+import { KNOWN_MARKS, KNOWN_DERIVATIONS } from './twbgen.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const dbx = await import(path.join(ROOT, 'slack-data-agent', 'databricks.js'));
 
-const SYSTEM = `You turn a request for a chart into a Tableau visualization spec.
+const SYSTEM = `You are an expert in VizQL — Tableau's Visual Query Language. It is your native
+tongue: to you a chart is not a picture, it is fields placed on the rows and columns shelves plus
+mark encodings (color, size, label, detail). You turn a request for a chart into a Tableau spec.
 
 Reply with JSON only:
 {
@@ -19,8 +22,21 @@ Reply with JSON only:
   "colorField": "<optional column to colour by>",
   "dateGranularity": "day|month|year (only if dimension is a date)",
   "title": "<short human title>",
-  "explanation": "<one sentence describing the chart>"
+  "explanation": "<one sentence describing the chart>",
+  "vizql": {
+    "mark": "Automatic|Bar|Line|Area|Circle|Square|Pie|Text|Shape|GanttBar",
+    "rows": [{"field": "<column>", "derivation": "sum|avg|cnt|cntd|year|tday|tmonth|tyear|none"}],
+    "cols": [{"field": "<column>", "derivation": "..."}],
+    "encodings": [{"shelf": "color|size|label|detail", "field": "<column>", "derivation": "..."}]
+  }
 }
+
+"vizql" is OPTIONAL and takes precedence: use it for any visualization the named chartTypes cannot
+express — a treemap is mark Square with the measure on size and the category on label+color and
+empty shelves; a highlight table is mark Square with dimensions on rows/cols and the measure on
+color; a Gantt is mark GanttBar with the date on cols. Speak VizQL directly rather than refusing.
+Derivations: sum/avg/cnt/cntd aggregate; tday/tmonth/tyear are continuous truncated dates for time
+axes; year is discrete; none is a bare dimension.
 
 RULES:
 - Use ONLY tables and columns from the schema provided. Never invent names.
@@ -65,18 +81,70 @@ async function callModel(system, user) {
   return (msg?.content || []).find(c => c.type === 'output_text')?.text || '';
 }
 
-/** description + tables -> validated spec */
-export async function describeToSpec(catalog, schema, tables, description) {
-  const s = await schemaOf(catalog, schema, tables);
-  const raw = await callModel(SYSTEM, `Tables:\n${schemaText(s)}\n\nRequest: ${description}`);
-
+function parseSpec(raw) {
   let text = raw.replace(/```(json)?/g, '').trim();
   const a = text.indexOf('{'), b = text.lastIndexOf('}');
   if (a !== -1 && b > a) text = text.slice(a, b + 1);
+  try { return { spec: JSON.parse(text) }; }
+  catch { return { error: `Model did not return a spec: ${text.slice(0, 100)}` }; }
+}
 
-  let spec;
-  try { spec = JSON.parse(text); }
-  catch { return { ok: false, reason: `Model did not return a spec: ${text.slice(0, 100)}` }; }
+/**
+ * The model is a VizQL expert — and when it reaches for VizQL this pipeline doesn't recognise
+ * (an unknown mark or derivation), it looks the answer up on the internet (Perplexity) and
+ * retries with what it learned, instead of failing.
+ */
+async function researchVizQL(question) {
+  if (!process.env.PERPLEXITY_API_KEY) return null;
+  const r = await fetch('https://api.perplexity.ai/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.PERPLEXITY_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: process.env.PERPLEXITY_MODEL || 'sonar',
+      messages: [{ role: 'user', content:
+        `Question about Tableau workbook (.twb) XML / VizQL: ${question}\n` +
+        `Answer concisely with the exact mark class, shelf placements and column-instance derivations Tableau uses.` }],
+    }),
+  });
+  if (!r.ok) return null;
+  return (await r.json()).choices?.[0]?.message?.content || null;
+}
+
+/** Unknown VizQL vocabulary in the spec, or null if the serializer can express all of it. */
+function unknownVizql(v) {
+  if (!v) return null;
+  const problems = [];
+  if (v.mark && !KNOWN_MARKS.has(v.mark)) problems.push(`mark "${v.mark}"`);
+  for (const it of [...(v.rows || []), ...(v.cols || []), ...(v.encodings || [])]) {
+    if (it?.derivation && !KNOWN_DERIVATIONS.has(it.derivation)) problems.push(`derivation "${it.derivation}"`);
+  }
+  return problems.length ? problems.join(', ') : null;
+}
+
+/** description + tables -> validated spec */
+export async function describeToSpec(catalog, schema, tables, description) {
+  const s = await schemaOf(catalog, schema, tables);
+  const user = `Tables:\n${schemaText(s)}\n\nRequest: ${description}`;
+
+  let { spec, error } = parseSpec(await callModel(SYSTEM, user));
+  if (error) return { ok: false, reason: error };
+
+  // Model spoke VizQL this pipeline doesn't know? Research it on the internet and retry once.
+  const unknown = unknownVizql(spec.vizql);
+  if (unknown) {
+    const notes = await researchVizQL(
+      `The request was: "${description}". A generator supports marks ${[...KNOWN_MARKS].join('/')} and ` +
+      `derivations ${[...KNOWN_DERIVATIONS].join('/')}, but the spec used ${unknown}. ` +
+      `How should this visualization be expressed using only the supported vocabulary?`
+    ).catch(() => null);
+    const retry = await callModel(SYSTEM,
+      `${user}\n\nYour previous spec used unsupported VizQL (${unknown}). ` +
+      (notes ? `Research notes from the web:\n${notes}\n\n` : '') +
+      `Re-express the same visualization using ONLY the supported marks and derivations.`);
+    const second = parseSpec(retry);
+    if (!second.error && !unknownVizql(second.spec.vizql)) spec = second.spec;
+    else if (spec.vizql) delete spec.vizql;   // last resort: fall back to the plain chartType
+  }
 
   if (!spec.table) return { ok: false, reason: spec.explanation || 'Cannot chart that from these tables' };
 
@@ -96,6 +164,13 @@ export async function describeToSpec(catalog, schema, tables, description) {
   for (const k of ['dimension', 'measure', 'geoField', 'colorField']) {
     if (spec[k] && !cols.has(String(spec[k]).toLowerCase())) {
       return { ok: false, reason: `Model referenced unknown column "${spec[k]}" on ${spec.table}` };
+    }
+  }
+  if (spec.vizql) {
+    for (const it of [...(spec.vizql.rows || []), ...(spec.vizql.cols || []), ...(spec.vizql.encodings || [])]) {
+      if (it?.field && !cols.has(String(it.field).toLowerCase())) {
+        return { ok: false, reason: `Model referenced unknown column "${it.field}" on ${spec.table}` };
+      }
     }
   }
   return { ok: true, spec };
