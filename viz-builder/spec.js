@@ -96,7 +96,9 @@ Reply with JSON only: {"good": true|false, "problem": "<one short phrase — wha
     const fixed = await describeToSpec(catalog, schema, [spec.table],
       `${description || spec.title}\n\nThe chart just produced was BROKEN: ${problem}. ` +
       `Design a CORRECTED, meaningful chart for this exact data — a different chart type, aggregation, ` +
-      `or VizQL if that reads better. Do not repeat the broken result.`);
+      `or VizQL if that reads better. Prefer a clear VISUAL chart (a horizontal bar handles many ` +
+      `categories or long labels well); use a plain table only if the data genuinely cannot be charted. ` +
+      `Do not repeat the broken result.`);
     if (fixed.ok) { fixed.spec.sheetName = fixed.spec.title || spec.sheetName || 'Viz'; return { good: false, problem, newSpec: fixed.spec }; }
   } catch { /* fall through */ }
   return { good: false, problem };            // couldn't regenerate — report, keep what we have
