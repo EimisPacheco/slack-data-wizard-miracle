@@ -218,11 +218,17 @@ export function generateTwb({ spec, columns }) {
   }
   // Pie: "% of total" is a table-calculated field, declared alongside the real columns.
   if (spec.chartType === 'pie' && !spec.vizql) {
-    // LOD ({ SUM(x) } = table-wide total) computes the share; the calc RETURNS the formatted
+    // LOD ({ AGG(x) } = table-wide total) computes the share; the calc RETURNS the formatted
     // label string itself ("39.0%") because default-format on a calc column doesn't reach
     // mark labels reliably.
+    //
+    // The aggregation MUST match the wedge-size encoding. Hardcoding SUM meant a COUNT pie
+    // ("signups by country", measure = an id column) sized wedges by row count but labelled them
+    // with shares of summed ids — silently wrong, and a hard failure if the id is a STRING.
+    const TAB_AGG = { sum: 'SUM', avg: 'AVG', cnt: 'COUNT', cntd: 'COUNTD' };
+    const pieAgg = `${TAB_AGG[aggKind] || 'SUM'}([${esc(spec.measure)}])`;
     colDefs.push(`    <column caption='% of Total' datatype='string' name='[Calculation_PctOfTotal]' role='measure' type='nominal'>
-      <calculation class='tableau' formula='STR(ROUND(SUM([${esc(spec.measure)}])/MIN({ SUM([${esc(spec.measure)}]) })*100,1)) + "%"' />
+      <calculation class='tableau' formula='STR(ROUND(${pieAgg}/MIN({ ${pieAgg} })*100,1)) + "%"' />
     </column>`);
     instances.push(`    <column-instance column='[Calculation_PctOfTotal]' derivation='User' name='[usr:Calculation_PctOfTotal:nk]' pivot='key' type='nominal' />`);
   }

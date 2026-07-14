@@ -49,6 +49,7 @@ ${SHAPE}`;
   for (let attempt = 0; attempt < 2; attempt++) {
     const r = await fetch(PPLX_URL, {
       method: 'POST',
+    signal: AbortSignal.timeout(90000),
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
@@ -84,6 +85,7 @@ ${SHAPE}`;
 
   const r = await fetch(OPENAI_URL, {
     method: 'POST',
+    signal: AbortSignal.timeout(90000),
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model,

@@ -32,7 +32,10 @@ const app = new App({ token: process.env.SLACK_BOT_TOKEN, appToken: process.env.
 
 // Per-user working context and short-lived wizard state. Lost on restart, by design.
 const context = new Map();     // userId -> { catalog, schema }
-const pendingUpload = new Map();// userId -> { csvText, filename, columns, dataRows }
+// Keyed by a unique uploadId, NOT userId: a second upload used to overwrite the first's slot,
+// so clicking an older card's 'Load table' loaded the NEW file's rows under the OLD file's name.
+const pendingUpload = new Map();// uploadId -> { userId, csvText, filename, columns, dataRows }
+let uploadSeq = 0;
 const pendingSql = new Map();   // actionId -> { plan, context }
 let sqlSeq = 0;                 // monotonic suffix for confirmation ids — never reused
 const history = new Map();      // userId -> [{ q, sql }] last 3 — lets follow-up questions resolve
@@ -114,6 +117,7 @@ Only include "name", "description" or "source" when they apply. When in doubt, u
 async function routeIntent(text) {
   const r = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
+    signal: AbortSignal.timeout(60000),
     headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || 'gpt-5.6-terra',
@@ -225,14 +229,15 @@ async function handleQuestion(text, userId, channel, client) {
   try { plan = await planQuery(text, ctx, history.get(userId) || []); }
   catch (err) { done(); throw err; }
   if (!plan.ok) { done(); await post(client, channel, `:no_entry: ${plan.reason}`); return { spoken: `I couldn't answer that. ${plan.reason}` }; }
-  remember(userId, text, plan.sql);
 
   if (plan.needsConfirmation) {
     done();
     // Monotonic id — deriving it from the map SIZE reused ids after a confirm/cancel deleted
     // an entry, which could silently swap someone's pending destructive SQL for another.
+    // NOTE: not remembered here — a cancelled or never-run DELETE must not poison follow-ups
+    // ("how many rows are left?") into assuming it happened. confirm_sql remembers it if it runs.
     const id = `sql_${userId}_${++sqlSeq}`;
-    pendingSql.set(id, { plan, context: { ...ctx } });
+    pendingSql.set(id, { plan, context: { ...ctx }, userId, request: text });
     const opts = {
       emoji: '⚠️', title: 'This will change your data',
       subtitle: `${ctx.catalog}.${ctx.schema}`,
@@ -249,10 +254,14 @@ async function handleQuestion(text, userId, channel, client) {
   let out;
   try { out = await runPlanned(plan, ctx); }
   finally { done(); }
+  remember(userId, text, plan.sql);   // only SQL that actually executed enters the history
 
   // The model now writes the DDL, so follow it: after creating a schema/catalog, work inside it.
-  const madeSchema = plan.sql.match(/\bcreate\s+schema\s+(?:if\s+not\s+exists\s+)?`?([A-Za-z0-9_]+)`?/i);
-  const madeCatalog = plan.sql.match(/\bcreate\s+catalog\s+(?:if\s+not\s+exists\s+)?`?([A-Za-z0-9_]+)`?/i);
+  // Only for statements the guard classified as CREATE — matching on a raw SELECT would fire on
+  // a string literal ("...WHERE body LIKE '%create schema training%'") and silently move the user.
+  const ddl = plan.kind === 'create' ? plan.sql : '';
+  const madeSchema = ddl.match(/\bcreate\s+schema\s+(?:if\s+not\s+exists\s+)?`?([A-Za-z0-9_]+)`?/i);
+  const madeCatalog = ddl.match(/\bcreate\s+catalog\s+(?:if\s+not\s+exists\s+)?`?([A-Za-z0-9_]+)`?/i);
   if (madeCatalog) { ctx.catalog = madeCatalog[1]; ctx.schema = 'default'; }
   else if (madeSchema) { ctx.schema = madeSchema[1]; }
   if (madeSchema || madeCatalog) {
@@ -292,13 +301,28 @@ function speakable(plan, out) {
 // URL buttons still emit an action event; ack it or Slack shows a warning icon on the button.
 app.action('open_whiteboard', async ({ ack }) => { await ack(); });
 
+/** Only the person who asked may confirm or cancel their own destructive SQL. */
+async function ownsPending(body, client, entry) {
+  if (entry.userId === body.user.id) return true;
+  await client.chat.postEphemeral({
+    channel: body.channel.id, user: body.user.id,
+    text: `Only <@${entry.userId}> can confirm this — it's their statement.`,
+  }).catch(() => {});
+  return false;
+}
+
 app.action('confirm_sql', async ({ ack, body, client }) => {
   await ack();
-  const entry = pendingSql.get(body.actions[0].value);
+  const id = body.actions[0].value;
+  const entry = pendingSql.get(id);
   if (!entry) { await post(client, body.channel.id, 'That confirmation expired.'); return; }
-  pendingSql.delete(body.actions[0].value);
+  // Without this, ANY channel member could click "Run it" on someone else's DELETE — the guard's
+  // whole premise is that a human who understood the SQL confirmed it.
+  if (!await ownsPending(body, client, entry)) return;
+  pendingSql.delete(id);
   try {
     const out = await runPlanned(entry.plan, entry.context);
+    remember(entry.userId, entry.request, entry.plan.sql);   // only remember SQL that actually ran
     await post(client, body.channel.id, `:white_check_mark: Done — ${out.affectedRows ?? 0} rows affected.\n\`${entry.plan.sql}\``);
   } catch (err) { await post(client, body.channel.id, `:x: ${err.message}`); }
 });
@@ -336,7 +360,8 @@ async function generateAndPreview(description, which, userId, channel, client) {
     const { columns, dataRows } = analyseCsv(gen.csv);
     const ctx = ctxOf(userId);
     const base = suggestTableName(description);
-    pendingUpload.set(userId, { csvText: gen.csv, filename: `${base}.csv`, columns, dataRows });
+    const uploadId = `up${++uploadSeq}`;
+    pendingUpload.set(uploadId, { userId, csvText: gen.csv, filename: `${base}.csv`, columns, dataRows });
 
     const src = which === 'real'
       ? `Real data via Perplexity · ${gen.citations.length} sources`
@@ -346,9 +371,9 @@ async function generateAndPreview(description, which, userId, channel, client) {
       subtitle: src,
       body: `${dataRows.length} rows · ${columns.length} columns → *${ctx.catalog}.${ctx.schema}*`,
       buttons: [
-        { text: 'Load table', action_id: 'load_simple', value: base, style: 'primary' },
-        { text: 'Build pipeline', action_id: 'load_medallion', value: base },
-        { text: 'Cancel', action_id: 'cancel_upload' },
+        { text: 'Load table', action_id: 'load_simple', value: `${uploadId}|${base}`, style: 'primary' },
+        { text: 'Build pipeline', action_id: 'load_medallion', value: `${uploadId}|${base}` },
+        { text: 'Cancel', action_id: 'cancel_upload', value: uploadId },
       ],
     };
     const previewTable = dataRows.length ? [dataTable(columns.map(c => c.name), dataRows.slice(0, 5), `Preview — first 5 of ${dataRows.length} rows`)] : [];
@@ -362,20 +387,21 @@ async function generateAndPreview(description, which, userId, channel, client) {
   } catch (err) { await post(client, channel, `:x: ${err.message}`); }
 }
 
-app.action('gen_real', async ({ ack, body, client }) => {
-  await ack();
+async function genFrom(which, body, client) {
   const d = pendingGen.get(body.user.id); pendingGen.delete(body.user.id);
-  if (d) await generateAndPreview(d, 'real', body.user.id, body.channel.id, client);
-});
-app.action('gen_synthetic', async ({ ack, body, client }) => {
-  await ack();
-  const d = pendingGen.get(body.user.id); pendingGen.delete(body.user.id);
-  if (d) await generateAndPreview(d, 'synthetic', body.user.id, body.channel.id, client);
-});
+  // Silently doing nothing (the old behaviour) made the button look broken after a restart.
+  if (!d) { await post(client, body.channel.id, 'That request expired — ask me again.'); return; }
+  await generateAndPreview(d, which, body.user.id, body.channel.id, client);
+}
+app.action('gen_real', async ({ ack, body, client }) => { await ack(); await genFrom('real', body, client); });
+app.action('gen_synthetic', async ({ ack, body, client }) => { await ack(); await genFrom('synthetic', body, client); });
 
 app.action('cancel_sql', async ({ ack, body, client }) => {
   await ack();
-  pendingSql.delete(body.actions[0].value);
+  const id = body.actions[0].value;
+  const entry = pendingSql.get(id);
+  if (entry && !await ownsPending(body, client, entry)) return;   // nor may others cancel it
+  pendingSql.delete(id);
   await post(client, body.channel.id, 'Cancelled. Nothing changed.');
 });
 
@@ -470,7 +496,8 @@ app.event('file_shared', async ({ event, client, logger, context }) => {
     }
 
     const { columns, dataRows } = analyseCsv(csvText);
-    pendingUpload.set(event.user_id, { csvText, filename: name, columns, dataRows });
+    const uploadId = `up${++uploadSeq}`;
+    pendingUpload.set(uploadId, { userId: event.user_id, csvText, filename: name, columns, dataRows });
     const ctx = ctxOf(event.user_id);
     const base = suggestTableName(name);
 
@@ -481,9 +508,9 @@ app.event('file_shared', async ({ event, client, logger, context }) => {
       body: `${dataRows.length} rows · ${columns.length} columns → *${ctx.catalog}.${ctx.schema}*`,
       subtext: `Columns: ${preview}`,
       buttons: [
-        { text: 'Load table', action_id: 'load_simple', value: base, style: 'primary' },
-        { text: 'Build pipeline', action_id: 'load_medallion', value: base },
-        { text: 'Cancel', action_id: 'cancel_upload' },
+        { text: 'Load table', action_id: 'load_simple', value: `${uploadId}|${base}`, style: 'primary' },
+        { text: 'Build pipeline', action_id: 'load_medallion', value: `${uploadId}|${base}` },
+        { text: 'Cancel', action_id: 'cancel_upload', value: uploadId },
       ],
     };
     // Show the extracted rows as a real table too, so the user can eyeball a scan before loading.
@@ -497,13 +524,13 @@ app.event('file_shared', async ({ event, client, logger, context }) => {
 });
 
 app.action('cancel_upload', async ({ ack, body, client }) => {
-  await ack(); pendingUpload.delete(body.user.id);
+  await ack(); pendingUpload.delete(body.actions[0].value);
   await post(client, body.channel.id, 'Upload cancelled.');
 });
 
-async function doLoad(userId, channel, client, base, medallion, mode = 'replace') {
-  const pending = pendingUpload.get(userId);
-  if (!pending) { await post(client, channel, 'That upload expired — send the CSV again.'); return; }
+async function doLoad(uploadId, userId, channel, client, base, medallion, mode = 'replace') {
+  const pending = pendingUpload.get(uploadId);
+  if (!pending) { await post(client, channel, 'That upload expired — send the file again.'); return; }
   const ctx = ctxOf(userId);
   try {
     await ensureSchema(ctx.catalog, ctx.schema);
@@ -514,7 +541,7 @@ async function doLoad(userId, channel, client, base, medallion, mode = 'replace'
         csvText: pending.csvText, sourceName: pending.filename,
         goldSpec: { aggregation: 'COUNT' },
       });
-      pendingUpload.delete(userId);
+      pendingUpload.delete(uploadId);
       const opts = {
         emoji: '🧱', title: 'Medallion pipeline built',
         subtitle: `${ctx.catalog}.${ctx.schema} · ${mode === 'append' ? 'appended' : 'replaced'}`,
@@ -528,7 +555,7 @@ async function doLoad(userId, channel, client, base, medallion, mode = 'replace'
       const r = await loadFlatTable({
         catalog: ctx.catalog, schema: ctx.schema, table: base, csvText: pending.csvText, mode,
       });
-      pendingUpload.delete(userId);
+      pendingUpload.delete(uploadId);
       // Say what actually happened — "appended 10" is only meaningful next to the new total.
       const what = mode === 'append'
         ? `Appended *${r.rowsInserted}* rows to \`${ctx.catalog}.${ctx.schema}.${base}\` — now *${r.totalRows}* rows.`
@@ -552,6 +579,7 @@ async function doLoad(userId, channel, client, base, medallion, mode = 'replace'
 async function tablesMentioned(text, all) {
   const r = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
+    signal: AbortSignal.timeout(60000),
     headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || 'gpt-5.6-terra',
@@ -673,7 +701,7 @@ const opt = (text, value, description) => ({
  * ("2026_q3_export_signups_v2.csv") that nobody wants to type in a question — so the name field
  * is pre-filled with a cleaned SUGGESTION and clearly labelled as one, to accept or overwrite.
  */
-function destinationView({ ctx, suggested, medallion, dest, tables, channel, rowCount }) {
+function destinationView({ ctx, suggested, uploadId, medallion, dest, tables, channel, rowCount }) {
   const noun = medallion ? 'pipeline' : 'table';
   const blocks = [
     { type: 'section', text: { type: 'mrkdwn',
@@ -696,7 +724,7 @@ function destinationView({ ctx, suggested, medallion, dest, tables, channel, row
     if (!tables.length) {
       blocks.push({ type: 'section', text: { type: 'mrkdwn',
         text: `_There are no tables in *${ctx.catalog}.${ctx.schema}* yet — pick *A new table* above._` } });
-      return baseView({ blocks, medallion, channel, suggested, dest, submit: false });
+      return baseView({ blocks, medallion, channel, suggested, uploadId, dest, submit: false });
     }
     blocks.push(
       { type: 'input', block_id: 'existing',
@@ -722,14 +750,14 @@ function destinationView({ ctx, suggested, medallion, dest, tables, channel, row
       element: { type: 'plain_text_input', action_id: 'v', initial_value: suggested,
         placeholder: plain('e.g. signups') } });
   }
-  return baseView({ blocks, medallion, channel, suggested, dest, submit: true });
+  return baseView({ blocks, medallion, channel, suggested, uploadId, dest, submit: true });
 }
 
-function baseView({ blocks, medallion, channel, suggested, dest, submit }) {
+function baseView({ blocks, medallion, channel, suggested, uploadId, dest, submit }) {
   return {
     type: 'modal',
     callback_id: 'submit_destination',
-    private_metadata: JSON.stringify({ channel, medallion, suggested, dest }),
+    private_metadata: JSON.stringify({ channel, medallion, suggested, uploadId, dest }),
     title: plain(medallion ? 'Build pipeline' : 'Load data'),
     ...(submit ? { submit: plain(medallion ? 'Build' : 'Load') } : {}),
     close: plain('Cancel'),
@@ -740,7 +768,9 @@ function baseView({ blocks, medallion, channel, suggested, dest, submit }) {
 /** Opens the modal. Table list is fetched live so "existing" always reflects reality. */
 async function askDestination(client, body, medallion) {
   const ctx = ctxOf(body.user.id);
-  const pending = pendingUpload.get(body.user.id);
+  const [uploadId, base] = String(body.actions[0].value).split('|');
+  const pending = pendingUpload.get(uploadId);
+  if (!pending) { await post(client, body.channel.id, 'That upload expired — send the file again.'); return; }
   // A trigger_id dies 3 seconds after the click, but listTables can take far longer on a
   // cold Databricks warehouse (expired_trigger_id, modal never opens). Open a placeholder
   // within the window, then swap in the real form when the table list arrives.
@@ -757,7 +787,7 @@ async function askDestination(client, body, medallion) {
   await client.views.update({
     view_id: opened.view.id,
     view: destinationView({
-      ctx, suggested: body.actions[0].value, medallion, dest: 'new',
+      ctx, suggested: base, uploadId, medallion, dest: 'new',
       tables, channel: body.channel.id, rowCount: pending?.dataRows?.length ?? 0,
     }),
   });
@@ -776,15 +806,15 @@ app.action({ block_id: 'dest', action_id: 'v' }, async ({ ack, body, client }) =
   await client.views.update({
     view_id: body.view.id, hash: body.view.hash,
     view: destinationView({
-      ctx, suggested: meta.suggested, medallion: meta.medallion, dest,
+      ctx, suggested: meta.suggested, uploadId: meta.uploadId, medallion: meta.medallion, dest,
       tables, channel: meta.channel,
-      rowCount: pendingUpload.get(body.user.id)?.dataRows?.length ?? 0,
+      rowCount: pendingUpload.get(meta.uploadId)?.dataRows?.length ?? 0,
     }),
   });
 });
 
 app.view('submit_destination', async ({ ack, body, view, client }) => {
-  const { channel, medallion } = JSON.parse(view.private_metadata);
+  const { channel, medallion, uploadId } = JSON.parse(view.private_metadata);
   const v = view.state.values;
   const dest = v.dest.v.selected_option.value;
 
@@ -804,7 +834,7 @@ app.view('submit_destination', async ({ ack, body, view, client }) => {
     mode = 'replace';   // a brand-new table: nothing to append to.
   }
   await ack();
-  await doLoad(body.user.id, channel, client, table, medallion, mode);
+  await doLoad(uploadId, body.user.id, channel, client, table, medallion, mode);
 });
 
 app.action('show_gold', async ({ ack, body, client }) => {
@@ -829,11 +859,12 @@ app.event('app_mention', async ({ event, client, logger }) => {
   } catch (err) { logger.error(err); await post(client, event.channel, `:x: ${err.message}`); }
 });
 
-app.message(async ({ message, client, logger }) => {
+app.message(async ({ message, client, logger, context }) => {
   if (message.channel_type !== 'im' || message.subtype) return;
-  // @mentioning the bot inside a DM fires BOTH app_mention and message → duplicate replies.
-  // app_mention already handles mentions, so skip them here.
-  if (/<@[A-Z0-9]+>/i.test(message.text || '')) return;
+  // @mentioning the BOT inside a DM fires BOTH app_mention and message → duplicate replies.
+  // Only skip the bot's own mention: matching ANY <@USER> silently swallowed messages that
+  // merely referenced a coworker ("load the csv <@U123> shared").
+  if (context.botUserId && new RegExp(`<@${context.botUserId}>`, 'i').test(message.text || '')) return;
   try {
     if (message.text?.trim()) await handleQuestion(message.text.trim(), message.user, message.channel, client);
   } catch (err) { logger.error(err); await post(client, message.channel, `:x: ${err.message}`); }

@@ -27,8 +27,11 @@ YOU CAN ALSO EMIT (when the user asks for them):
   before they run, so emit the correct statement rather than refusing.`;
 
 async function callOpenAI(system, user) {
+  // Node's fetch never times out on its own: a stalled provider connection would hang the
+  // bot's only process forever, with no error and no recovery.
   const res = await fetch(OPENAI_API_URL, {
     method: 'POST',
+    signal: AbortSignal.timeout(90000),
     headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: MODEL, input: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
   });

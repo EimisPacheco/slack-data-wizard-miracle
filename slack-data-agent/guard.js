@@ -50,6 +50,10 @@ const CREATABLE = /^create\s+(temporary\s+)?(catalog|schema|database|table|index
 // CREATE OR REPLACE overwrites existing data — treat like a destructive rebuild.
 const OR_REPLACE = /^create\s+or\s+replace\b/i;
 
+// INSERT OVERWRITE wipes the target table before writing — as destructive as CREATE OR REPLACE,
+// but it starts with a "safe" verb, so it must be caught explicitly.
+const INSERT_OVERWRITE = /^insert\s+overwrite\b/i;
+
 function classifyOne(statement) {
   const verb = verbOf(statement);
   if (DESTRUCTIVE_VERBS.includes(verb)) return KIND.DESTRUCTIVE;
@@ -57,7 +61,7 @@ function classifyOne(statement) {
     if (OR_REPLACE.test(statement)) return KIND.DESTRUCTIVE;
     return CREATABLE.test(statement) ? KIND.CREATE : KIND.UNKNOWN;
   }
-  if (verb === 'insert') return KIND.CREATE;
+  if (verb === 'insert') return INSERT_OVERWRITE.test(statement) ? KIND.DESTRUCTIVE : KIND.CREATE;
   if (READ_VERBS.includes(verb)) return KIND.READ;
   return KIND.UNKNOWN;
 }
@@ -89,8 +93,13 @@ export function classify(sql) {
   }
 
   // A read must not smuggle a write in a subquery or CTE body.
+  //
+  // The (?!\s*\() lookahead skips FUNCTION-CALL position: `SELECT replace(email,'-','')` is a
+  // harmless string function, but a bare \breplace\b scan refused it as destructive. No real
+  // destructive statement has "(" right after the verb (DROP TABLE t, DELETE FROM t, MERGE INTO…),
+  // so this narrows false positives without opening a bypass.
   if (kind === KIND.READ) {
-    const smuggled = DESTRUCTIVE_VERBS.find(v => new RegExp(`\\b${v}\\b`, 'i').test(statement));
+    const smuggled = DESTRUCTIVE_VERBS.find(v => new RegExp(`\\b${v}\\b(?!\\s*\\()`, 'i').test(statement));
     if (smuggled) {
       return { ok: false, kind: KIND.DESTRUCTIVE, reason: `Read statement contains "${smuggled.toUpperCase()}"` };
     }

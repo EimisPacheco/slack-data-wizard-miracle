@@ -71,6 +71,7 @@ function schemaText(s) {
 async function callModel(system, user) {
   const r = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
+    signal: AbortSignal.timeout(90000),
     headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: process.env.OPENAI_MODEL || 'gpt-5.6-terra',
       input: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
@@ -98,6 +99,7 @@ async function researchVizQL(question) {
   if (!process.env.PERPLEXITY_API_KEY) return null;
   const r = await fetch('https://api.perplexity.ai/chat/completions', {
     method: 'POST',
+    signal: AbortSignal.timeout(60000),
     headers: { Authorization: `Bearer ${process.env.PERPLEXITY_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: process.env.PERPLEXITY_MODEL || 'sonar',

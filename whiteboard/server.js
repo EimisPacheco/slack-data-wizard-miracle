@@ -23,7 +23,12 @@ function toCsv({ columns, rows }) {
   const esc = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
   return [columns.map(esc).join(','), ...rows.map(r => columns.map((_, i) => esc(r[i])).join(','))].join('\n') + '\n';
 }
-const sanitize = s => (s || 'drawing').toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_{2,}/g, '_').slice(0, 40) || 'drawing';
+// A leading digit is legal here but ident() rewrites it to `c_<name>` at creation time — we'd
+// then report a table path that doesn't exist. Normalise the same way up front.
+const sanitize = s => {
+  const n = (s || 'drawing').toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_{2,}/g, '_').slice(0, 40) || 'drawing';
+  return /^\d/.test(n) ? `c_${n}` : n;
+};
 
 const app = express();
 app.use(express.json({ limit: '12mb' }));
@@ -31,15 +36,17 @@ app.use(express.static(path.join(import.meta.dirname, 'public')));
 
 app.post('/extract', async (req, res) => {
   try {
-    const { image, table, catalog, schema } = req.body || {};
+    // catalog/schema deliberately NOT taken from the request: an unauthenticated caller could
+    // otherwise target any namespace the Databricks token can write.
+    const { image, table } = req.body || {};
     if (!image) return res.status(400).json({ error: 'no image' });
     const png = Buffer.from(image.replace(/^data:image\/png;base64,/, ''), 'base64');
 
     const r = await extractTable(png);
     if (!r.rows.length) return res.json({ ok: false, message: 'No table found in the drawing. Try clearer rows/columns.' });
 
-    const c = catalog || process.env.DATABRICKS_CATALOG || 'workspace';
-    const s = schema || process.env.DATABRICKS_SCHEMA || 'data_wizard';
+    const c = process.env.DATABRICKS_CATALOG || 'workspace';
+    const s = process.env.DATABRICKS_SCHEMA || 'data_wizard';
     const tbl = sanitize(table);
     const csv = toCsv(r);
     const { columns } = analyseCsv(csv);  // for the typed preview
@@ -138,4 +145,7 @@ app.post('/dashboard', async (req, res) => {
 });
 
 const PORT = Number(process.env.WHITEBOARD_PORT || 3200);
-app.listen(PORT, () => console.log(`🎨 Whiteboard → table on http://localhost:${PORT}`));
+// Loopback ONLY. app.listen(PORT) alone binds 0.0.0.0, which on venue/office WiFi exposes these
+// unauthenticated endpoints — they spend OpenAI/Tableau quota and post into Slack as the bot.
+// To demo from another device, put a tunnel (ngrok/cloudflared) in front instead.
+app.listen(PORT, '127.0.0.1', () => console.log(`🎨 Whiteboard → table on http://localhost:${PORT} (loopback only)`));

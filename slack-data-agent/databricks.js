@@ -18,7 +18,7 @@ function headers() {
 async function poll(statementId) {
   // Serverless cold start can exceed the initial wait; poll until terminal.
   for (let i = 0; i < 60; i++) {
-    const r = await fetch(`${HOST()}/api/2.0/sql/statements/${statementId}`, { headers: headers() });
+    const r = await fetch(`${HOST()}/api/2.0/sql/statements/${statementId}`, { headers: headers(), signal: AbortSignal.timeout(30000) });
     const j = await r.json();
     const state = j.status?.state;
     if (['SUCCEEDED', 'FAILED', 'CANCELED', 'CLOSED'].includes(state)) return j;
@@ -42,7 +42,7 @@ export async function runSql(statement, opts = {}) {
   if (opts.schema) body.schema = opts.schema;
 
   const r = await fetch(`${HOST()}/api/2.0/sql/statements`, {
-    method: 'POST', headers: headers(), body: JSON.stringify(body),
+    method: 'POST', headers: headers(), body: JSON.stringify(body), signal: AbortSignal.timeout(120000),
   });
   if (!r.ok) throw new Error(`Databricks HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
 
@@ -57,7 +57,21 @@ export async function runSql(statement, opts = {}) {
   }
 
   const columns = (result.manifest?.schema?.columns || []).map(c => ({ name: c.name, type: c.type_name }));
-  const rows = result.result?.data_array || [];
+
+  // The API returns only the FIRST chunk inline. Ignoring the rest silently truncated large
+  // results — worst in the Tableau CSV snapshot, where a chart would be built (and published,
+  // with no error) from a fraction of the table. Follow next_chunk_internal_link to the end.
+  const rows = [...(result.result?.data_array || [])];
+  let next = result.result?.next_chunk_internal_link;
+  let guard = 0;
+  while (next && guard++ < 200) {
+    const cr = await fetch(`${HOST()}${next}`, { headers: headers(), signal: AbortSignal.timeout(60000) });
+    if (!cr.ok) throw new Error(`Databricks chunk HTTP ${cr.status}`);
+    const cj = await cr.json();
+    rows.push(...(cj.data_array || []));
+    next = cj.next_chunk_internal_link;
+  }
+
   const rowObjects = rows.map(row => Object.fromEntries(columns.map((c, i) => [c.name, row[i]])));
   return { columns, rows, rowObjects, totalRows: result.manifest?.total_row_count ?? rows.length };
 }
