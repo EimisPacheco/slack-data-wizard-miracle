@@ -31,6 +31,20 @@ async function poll(statementId) {
  * Runs one SQL statement. Returns { columns: [{name,type}], rows: [[...]], rowObjects: [{}] }.
  * @param {object} opts { catalog, schema } set the default namespace for the statement.
  */
+// Databricks returns opaque 400s when the serverless warehouse can't run the statement — most often
+// a stopped warehouse or (on Community Edition) exhausted free daily compute. Surface a human message
+// instead of raw JSON so the bot — and its spoken reply — explains what's actually wrong.
+function friendlyDbxError(status, text) {
+  const low = (text || '').toLowerCase();
+  if (low.includes('free daily limit') || low.includes('community_edition_credit_exhausted')) {
+    return 'Databricks Community Edition has used up its free daily compute, so the SQL warehouse can’t start — it resets the next day. Your request was fine; the warehouse is just unavailable right now.';
+  }
+  if (low.includes('could not be processed by the warehouse')) {
+    return 'The Databricks SQL warehouse isn’t available right now (stopped or still starting up). Give it a minute and try again.';
+  }
+  return `Databricks HTTP ${status}: ${(text || '').slice(0, 200)}`;
+}
+
 export async function runSql(statement, opts = {}) {
   const body = {
     warehouse_id: WAREHOUSE(),
@@ -44,7 +58,7 @@ export async function runSql(statement, opts = {}) {
   const r = await fetch(`${HOST()}/api/2.0/sql/statements`, {
     method: 'POST', headers: headers(), body: JSON.stringify(body), signal: AbortSignal.timeout(120000),
   });
-  if (!r.ok) throw new Error(`Databricks HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  if (!r.ok) throw new Error(friendlyDbxError(r.status, await r.text()));
 
   let result = await r.json();
   if (['PENDING', 'RUNNING'].includes(result.status?.state)) {
