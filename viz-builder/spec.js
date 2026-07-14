@@ -65,9 +65,13 @@ Judge whether the chart is CORRECT and MEANINGFUL for that data — not merely p
   the data was not grouped or plotted correctly.
 - BROKEN: labels overlapping to the point of being unreadable, or a chart type that fights the data
   (e.g. a pie with many tiny crowded slices).
-- GOOD: a line that clearly rises or falls, bars of differing heights, a clean readable chart whose
-  shape matches the data. IMPORTANT: a straight DIAGONAL line that steadily rises is GOOD — that is
-  legitimate cumulative growth, NOT an error. Do not "fix" a correct chart.
+- BROKEN/uninsightful: a PERFECTLY straight line (constant slope) or bars all the SAME height. The
+  plotted field is uniform, so the chart reveals nothing and is not a valid chart. Unless the request
+  explicitly asked for a cumulative total or growth-to-date, treat this as broken and regenerate over
+  a DIFFERENT dimension that actually varies (e.g. a category/status breakdown).
+- GOOD: a line with real ups and downs, bars of differing heights, a pie with differing slices — a
+  clean readable chart whose shape matches the data and shows how it differs. Do not "fix" a chart
+  that already shows real variation.
 
 Reply with JSON only: {"good": true|false, "problem": "<one short phrase — what's wrong, or empty>"}`;
   let verdict;
@@ -123,6 +127,14 @@ Derivations: sum/avg/cnt/cntd aggregate; tday/tmonth/tyear are continuous trunca
 axes; year is discrete; none is a bare dimension.
 
 RULES:
+- REASON about the DATA PROFILE first: a chart must make sense for the actual data. Only chart a
+  field where the measure VARIES across it (the profile marks these "VARIES ✓"). NEVER build a chart
+  on a field the profile says is CONSTANT/uniform or all-equal — it renders a flat or perfectly
+  straight line that shows nothing and is not a valid chart. In particular, do NOT put an evenly-
+  spread date on a line/area if its per-day count is constant; pick a categorical dimension that
+  varies instead (e.g. a country/status/category breakdown). Near-unique columns (id, name, email)
+  are never grouping dimensions. Choose the single view that best reveals how the data actually
+  differs, and title it for that story.
 - Use ONLY tables and columns from the schema provided. Never invent names.
 - For geographic data (countries, regions), use bar or hbar grouped by that column — never a map.
 - pie suits share-per-category with FEW categories (≤8); with more, prefer hbar.
@@ -150,6 +162,56 @@ export async function listTables(catalog, schema) {
 
 function schemaText(s) {
   return Object.entries(s).map(([t, cols]) => `${t}(${cols.map(c => `${c.name} ${c.type}`).join(', ')})`).join('\n');
+}
+
+/**
+ * A compact statistical profile of a table so the EXPERT can REASON about what chart actually makes
+ * sense for THIS data — which fields VARY (worth charting) and which are uniform or unique (a flat/
+ * straight line, or an unusable axis). Best-effort, bounded, run in parallel; never blocks a spec.
+ */
+async function profileTable(catalog, schema, table, cols) {
+  const fq = `\`${catalog}\`.\`${schema}\`.\`${table}\``;
+  const run = sql => dbx.runSql(sql).then(r => r.rows).catch(() => null);
+  const isDate = t => /date|timestamp/.test(t);
+  const isNum = t => /int|double|float|decimal|numeric/.test(t);
+
+  const distSel = cols.map((c, i) => `COUNT(DISTINCT \`${c.name}\`) AS d${i}`).join(', ');
+  const head = await run(`SELECT COUNT(*) AS n, ${distSel} FROM ${fq}`);
+  if (!head) return null;
+  const n = Number(head[0][0]);
+  if (!n) return `${table}: 0 rows (empty)`;
+
+  // For each column pick the one extra probe that reveals its variation, then run them all at once.
+  const probes = cols.map((c, i) => {
+    const t = (c.type || '').toLowerCase();
+    const d = Number(head[0][i + 1]);
+    if (isDate(t)) return run(`SELECT DATE_TRUNC('day', \`${c.name}\`) k, COUNT(*) v FROM ${fq} WHERE \`${c.name}\` IS NOT NULL GROUP BY 1 ORDER BY k LIMIT 60`).then(r => ({ i, kind: 'date', d, r }));
+    if (d >= 2 && d <= 15 && d < n) return run(`SELECT \`${c.name}\` k, COUNT(*) v FROM ${fq} GROUP BY 1 ORDER BY v DESC LIMIT 12`).then(r => ({ i, kind: 'dist', d, r }));
+    if (isNum(t) && d > 15) return run(`SELECT MIN(\`${c.name}\`), MAX(\`${c.name}\`), ROUND(AVG(\`${c.name}\`), 2) FROM ${fq}`).then(r => ({ i, kind: 'range', d, r }));
+    return Promise.resolve({ i, kind: 'plain', d, r: null });
+  });
+  const done = await Promise.all(probes);
+
+  const lines = [`${table}: ${n} rows`];
+  for (const { i, kind, d, r } of done) {
+    const c = cols[i], t = (c.type || '').toLowerCase();
+    let note = `${d} distinct`;
+    if (kind === 'date' && r?.length) {
+      const v = r.map(x => Number(x[1]));
+      const varies = Math.max(...v) !== Math.min(...v);
+      note += `; ${r.length} day(s) ${String(r[0][0]).slice(0, 10)}..${String(r[r.length - 1][0]).slice(0, 10)}, per-day count ${varies ? 'VARIES ✓' : `is CONSTANT (${v[0]} every day) — a trend/line over time would be a flat or perfectly straight line, uninsightful`}`;
+    } else if (kind === 'dist' && r?.length) {
+      const v = r.map(x => Number(x[1]));
+      const varies = Math.max(...v) !== Math.min(...v);
+      note += `; ${r.map(x => `${x[0] == null ? 'null' : x[0]}=${x[1]}`).join(', ')} (${varies ? 'VARIES ✓ — meaningful to chart' : 'all equal — flat'})`;
+    } else if (kind === 'range' && r?.length) {
+      note += ` — continuous numeric measure (min ${r[0][0]}, max ${r[0][1]}, avg ${r[0][2]})`;
+    } else if (d >= n && n > 1) {
+      note += isNum(t) ? ' — near-unique numeric (a measure)' : ' — unique per row (id/label, not a grouping dimension)';
+    }
+    lines.push(`  ${c.name} ${c.type} — ${note}`);
+  }
+  return lines.join('\n');
 }
 
 async function callModel(system, user) {
@@ -211,7 +273,11 @@ function unknownVizql(v) {
 /** description + tables -> validated spec */
 export async function describeToSpec(catalog, schema, tables, description) {
   const s = await schemaOf(catalog, schema, tables);
-  const user = `Tables:\n${schemaText(s)}\n\nRequest: ${description}`;
+  const profiles = (await Promise.all(tables.map(t => profileTable(catalog, schema, t, s[t] || []).catch(() => null)))).filter(Boolean);
+  const user = `Tables:\n${schemaText(s)}\n\n` +
+    `DATA PROFILE — reason about what chart actually makes sense for THIS data before choosing:\n` +
+    `${profiles.join('\n\n') || '(profile unavailable)'}\n\n` +
+    `Request: ${description}`;
 
   let { spec, error } = parseSpec(await callModel(SYSTEM, user));
   if (error) return { ok: false, reason: error };
